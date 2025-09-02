@@ -14,21 +14,24 @@ os.environ.setdefault('UFO_CONFIG_PATH', os.path.join(os.path.dirname(__file__),
 
 # 導入 UFO2 基本模組
 import time
+import subprocess
 from ufo.module.basic import BaseSession
 from ufo.config.config import Config
 from ufo.agents.agent.host_agent import HostAgent, AgentFactory
 from ufo.agents.agent.app_agent import AppAgent
 from ufo.llm.llm_call import get_completion
+from ufo.module.sessions.session import SessionFactory
+from ufo.module.context import Context, ContextNames
+from ufo.automator.ui_control.inspector import ControlInspectorFacade
+from ufo import utils
 
-# ===== UFO2 文件操作代理類別 =====
-class UFO2FileAgent:
+# ===== Chrome 瀏覽器自動化代理類別 =====
+class ChromeAutomationAgent:
     def __init__(self):
         """
-        初始化 UFO2 文件操作代理
-        使用 UFO2 架構的基礎組件
+        初始化 Chrome 自動化代理
+        使用 UFO2 架構進行瀏覽器自動化
         """
-        self.file_content = None
-        self.first_line = None
         self.session_data = {}
         
         # 初始化 UFO2 配置
@@ -39,539 +42,674 @@ class UFO2FileAgent:
             print(f"⚠️  UFO2 配置載入失敗，使用預設設定: {e}")
             self.config = {}
             
-        # 初始化 Host Agent 用於專題報告生成
+        # 初始化 Host Agent
         try:
             self.host_agent = AgentFactory.create_agent(
                 "host",
                 "HostAgent",
-                True,  # is_visual
-                "",    # main_prompt
-                "",    # example_prompt
-                ""     # api_prompt
+                self.config.get("HOST_AGENT", {}).get("VISUAL_MODE", True),
+                self.config.get("HOSTAGENT_PROMPT", ""),
+                self.config.get("HOSTAGENT_EXAMPLE_PROMPT", ""),
+                self.config.get("API_PROMPT", "")
             )
             print("✅ UFO2 Host Agent 已初始化")
         except Exception as e:
             print(f"⚠️  Host Agent 初始化失敗: {e}")
             self.host_agent = None
             
-        # 初始化 App Agent 用於 UI 自動化
-        try:
-            self.app_agent = AgentFactory.create_agent(
-                "app",
-                "AppAgent",
-                True,  # is_visual
-                "",    # main_prompt
-                "",    # example_prompt
-                ""     # api_prompt
-            )
-            print("✅ UFO2 App Agent 已初始化")
-        except Exception as e:
-            print(f"⚠️  App Agent 初始化失敗: {e}")
-            self.app_agent = None
-
-    def open_and_read_file(self, file_path):
-        """
-        開啟檔案並讀取第一行內容
-        使用 UFO2 架構的檔案操作方式
-        """
-        try:
-            # 檢查檔案是否存在
-            if not os.path.exists(file_path):
-                raise FileNotFoundError(f"檔案 {file_path} 不存在")
-            
-            # 使用 UFO2 架構的檔案操作方式
-            print(f"🔄 正在使用 UFO2 架構開啟檔案: {file_path}")
-            
-            # 記錄操作到 session 中（UFO2 風格）
-            self.session_data['file_operation'] = {
-                'action': 'open_file',
-                'file_path': file_path,
-                'timestamp': time.time()
-            }
-            
-            # 讀取檔案內容
-            with open(file_path, 'r', encoding='utf-8') as file:
-                self.file_content = file.read()
-                lines = self.file_content.splitlines()
-                
-                if lines:
-                    self.first_line = lines[0]
-                    print(f"✅ 成功讀取檔案第一行: {self.first_line}")
-                    
-                    # 更新 session 資料
-                    self.session_data['file_operation']['result'] = 'success'
-                    self.session_data['file_operation']['first_line'] = self.first_line
-                    self.session_data['file_operation']['total_lines'] = len(lines)
-                else:
-                    self.first_line = ""
-                    print("⚠️  檔案為空")
-                    self.session_data['file_operation']['result'] = 'empty_file'
-                    
-            return self.first_line
-            
-        except Exception as e:
-            error_msg = f"讀取檔案時發生錯誤: {str(e)}"
-            print(f"❌ {error_msg}")
-            
-            # 記錄錯誤到 session
-            self.session_data['file_operation']['result'] = 'error'
-            self.session_data['file_operation']['error'] = str(e)
-            
-            raise
-
-    def translate_with_host_agent(self, text):
-        """
-        使用 UFO2 Host Agent 進行中文專題報告生成
-        """
-        try:
-            print(f"🤖 正在使用 UFO2 Host Agent 生成專題報告: {text}")
-            
-            # 構建專題報告生成請求的訊息（包含 'json' 關鍵字以符合 UFO2 要求）
-            translation_prompt = [
-                {
-                    "role": "system",
-                    "content": "您是一位專業的中文寫作專家。請根據提供的內容撰寫一篇結構完整的中文專題報告。報告格式要求：1)標題 2)前言/背景 3)主要內容分析 4)結論與建議。文字要流暢、邏輯清晰，適合作為專題報告使用，字數嚴格控制在200字以內。請以JSON格式回應，使用'article'作為key。"
-                },
-                {
-                    "role": "user", 
-                    "content": f"請根據以下內容撰寫一篇中文專題報告，包含完整結構，字數500字以內，以JSON格式返回：'{text}'"
-                }
-            ]
-            
-            # 使用 UFO2 的 LLM API 進行翻譯
-            response, cost = get_completion(
-                translation_prompt, 
-                agent="HOST", 
-                use_backup_engine=True
-            )
-            
-            # 解析 JSON 回應並提取翻譯結果
-            try:
-                import json
-                # 嘗試解析 JSON 回應
-                if response.startswith('{') and response.endswith('}'):
-                    response_json = json.loads(response)
-                    translated_text = response_json.get('article', response_json.get('translation', response))
-                else:
-                    # 如果回應不是 JSON 格式，直接使用內容
-                    translated_text = response
-            except json.JSONDecodeError:
-                # JSON 解析失敗時，直接使用回應內容
-                translated_text = response
-            except Exception:
-                # 其他錯誤時，使用回應內容
-                translated_text = response
-            
-            # 清理翻譯結果
-            translated_text = str(translated_text).strip().strip('"').strip("'")
-            
-            # 格式化成本為小數3位
-            formatted_cost = f"{float(cost):.3f}" if cost is not None else "0.000"
-            
-            print(f"✅ 專題報告生成完成: {translated_text}")
-            print(f"💰 API 成本: ${formatted_cost}")
-            
-            # 記錄報告生成操作
-            self.session_data['translation'] = {
-                'original_text': text,
-                'translated_text': translated_text,
-                'timestamp': time.time(),
-                'cost': float(cost) if cost is not None else 0.0
-            }
-            
-            return translated_text
-            
-        except Exception as e:
-            error_msg = f"專題報告生成失敗: {str(e)}"
-            print(f"❌ {error_msg}")
-            
-            # 記錄報告生成錯誤
-            self.session_data['translation'] = {
-                'original_text': text,
-                'result': 'error',
-                'error': str(e),
-                'timestamp': time.time(),
-                'cost': 0.0
-            }
-            
-            raise
-
-    def write_to_file(self, file_path, content, append_mode=True):
-        """
-        使用 UFO2 AppAgent 控制 Notepad 創建新檔案並將內容寫入
-        通過 UI 自動化的方式開啟空白 Notepad，輸入內容後保存為指定檔案
-        """
-        try:
-            print(f"🤖 正在使用 UFO2 AppAgent 控制 Notepad 寫入檔案...")
-            
-            # 構建 AppAgent 的 UI 自動化請求
-            automation_prompt = [
-                {
-                    "role": "system",
-                    "content": "You are a UI automation assistant. Help control Windows applications like Notepad through keyboard and mouse actions. Respond in JSON format with 'actions' and 'status' as keys."
-                },
-                {
-                    "role": "user",
-                    "content": f"Open Notepad (blank), type the following content character by character: '{content}', then save the file as '{file_path}'. Return the automation steps in JSON format."
-                }
-            ]
-            
-            # 使用 UFO2 的 LLM API 來規劃 UI 自動化步驟
-            response, cost = get_completion(
-                automation_prompt,
-                agent="APP",  # 使用 APP Agent
-                use_backup_engine=True
-            )
-            
-            print(f"🎯 AppAgent 規劃的自動化步驟: {response}")
-            
-            # 執行實際的 UI 自動化操作
-            import subprocess
-            import pyautogui
-            import pyperclip  # 用於剪貼簿操作
-            import time as sleep_time
-            
-            # 步驟1: 啟動 Notepad（不直接開啟檔案）
-            print("📋 步驟1: 啟動 Notepad")
-            subprocess.Popen(['notepad.exe'])  # 啟動空白的 Notepad
-            sleep_time.sleep(1)  # 等待 Notepad 啟動（增加等待時間）
-            
-            # # 步驟1.5: 最大化 Notepad 視窗
-            # print("🔍 步驟1.5: 最大化 Notepad 服務視窗")
-            # # 使用 Alt+Tab 確保 Notepad 在前景
-            # pyautogui.hotkey('alt', 'tab')
-            # sleep_time.sleep(0.5)
-            
-            # # 使用 Windows 鍵 + 上箭頭最大化視窗
-            # pyautogui.hotkey('win', 'up')
-            # sleep_time.sleep(1)
-            
-            # # 或者使用 Alt+Space 然後 x 來最大化
-            # pyautogui.hotkey('alt', 'space')
-            # sleep_time.sleep(0.3)
-            # pyautogui.press('x')  # x 代表最大化
-            # sleep_time.sleep(1)
-
-            print("✅ Notepad 視窗已最大化")
-            
-            # 步驟2: 確保 Notepad 視窗在前景並點擊文本編輯區域
-            print("🔍 步驟2: 確保 Notepad 視窗在前景並點擊文本編輯區域")
-            
-            # 點擊 Notepad 的文本編輯區域以確保游標在正確位置
-            # print("👆 點擊文本編輯區域以定位游標")
-            # # 由於視窗已最大化，可以更精確地定位文本區域
-            # screen_width, screen_height = pyautogui.size()
-            # # 點擊螢幕中央偏上的位置（文本編輯區域）
-            # click_x = screen_width // 2
-            # click_y = screen_height // 3  # 偏上一些，避免點到狀態欄
-            # pyautogui.click(click_x, click_y)
-            # sleep_time.sleep(0.5)
-            
-            # print(f"🖱️  已點擊座標 ({click_x}, {click_y}) 以定位游標")
-            
-            # 步驟3: 確保文本編輯區域有焦點並準備輸入
-            # print("⌨️ 步驟3: 確保文本編輯區域有焦點並準備輸入")
-            
-            # 使用 Tab 鍵確保焦點在文本編輯區域（如果焦點在菜單欄）
-            # pyautogui.press('tab')
-            # sleep_time.sleep(0.2)
-            
-            # 按 Ctrl+Home 確保游標在文件開頭
-            pyautogui.hotkey('ctrl', 'home')
-            sleep_time.sleep(0.2)
-            
-            # 測試輸入一個空格然後刪除，確認輸入功能正常
-            print("🧪 測試輸入功能...")
-            pyautogui.press('space')
-            sleep_time.sleep(0.1)
-            pyautogui.press('backspace')
-            sleep_time.sleep(0.2)
-            
-            print("✅ 文本編輯區域已準備就緒")  
-            
-            # 使用剪貼簿方式逐字輸入中文內容（解決中文輸入問題）
-            print("📋 使用剪貼簿方式逐字輸入中文內容...")
-            
-            # 設定輸入速度（可調整）- 批次處理提升速度
-            chunk_size = 8  # 每次貼入的字符數量（5-10個字符）
-            chunk_delay = 0.01  # 每批次間的延遲（秒）
-            clipboard_delay = 0.005  # 剪貼簿更新延遲（秒）
-            
-            # 分批處理內容
-            total_chars = len(content)
-            for i in range(0, total_chars, chunk_size):
-                # 取得當前批次的字符
-                chunk = content[i:i + chunk_size]
-                
-                # 將批次字符複製到剪貼簿
-                pyperclip.copy(chunk)
-                sleep_time.sleep(clipboard_delay)  # 等待剪貼簿更新
-                
-                # 使用 Ctrl+V 貼上批次字符
-                pyautogui.hotkey('ctrl', 'v')
-                sleep_time.sleep(chunk_delay)  # 每個批次間的延遲
-                
-                # 每3個批次顯示進度（約24個字符）
-                current_pos = min(i + chunk_size, total_chars)
-                if (i // chunk_size + 1) % 3 == 0 or current_pos == total_chars:
-                    print(f"📝 已輸入 {current_pos}/{total_chars} 個字符... (批次大小: {len(chunk)})")
-            
-            print(f"✅ 中文內容已通過剪貼簿逐字成功輸入 (共 {len(content)} 個字符)")
-            
-            # 步驟4: 保存檔案到指定路徑
-            print("💾 步驟4: 保存檔案到指定路徑")
-            pyautogui.hotkey('ctrl', 's')  # Ctrl+S 開啟保存對話框
-            sleep_time.sleep(1)
-            
-            # 輸入檔案路徑和名稱
-            print(f"📁 輸入檔案路徑: {file_path}")
-            pyperclip.copy(file_path)  # 將檔案路徑複製到剪貼簿
-            sleep_time.sleep(0.2)
-            pyautogui.hotkey('ctrl', 'v')  # 貼上檔案路徑
-            sleep_time.sleep(0.5)
-            
-            # 按下 Enter 確認保存
-            pyautogui.press('enter')
-            sleep_time.sleep(1)
-            
-            # 格式化成本為小數3位
-            formatted_cost = f"{float(cost):.3f}" if cost is not None else "0.000"
-            
-            print(f"✅ AppAgent 成功使用 Notepad 創建新檔案並寫入內容: {content}")
-            print(f"💰 AppAgent API 成本: ${formatted_cost}")
-            print(f"🎮 UI 自動化完成：已在新檔案中通過剪貼簿逐字輸入中文到 Notepad")
-            
-            # 記錄寫入操作（UFO2 AppAgent UI 自動化風格）
-            self.session_data['write_operation'] = {
-                'agent_type': 'AppAgent',
-                'automation_type': 'UI_Automation',
-                'target_app': 'Notepad',
-                'action': 'create_new_file_via_clipboard',
-                'file_path': file_path,
-                'content': content,
-                'append_mode': append_mode,
-                'automation_steps': [
-                    'Launch Notepad (blank)',
-                    'Maximize Notepad window',
-                    'Focus on text editing area',
-                    'Click text area and position cursor',
-                    'Test input functionality',
-                    'Copy each character to clipboard',
-                    'Paste character by character',
-                    'Save file to specified path'
-                ],
-                'ai_response': response,
-                'api_cost': float(cost) if cost is not None else 0.0,
-                'timestamp': time.time(),
-                'result': 'success'
-            }
-            
-        except Exception as e:
-            error_msg = f"AppAgent UI 自動化失敗: {str(e)}"
-            print(f"❌ {error_msg}")
-            
-            # 記錄自動化錯誤
-            self.session_data['write_operation'] = {
-                'agent_type': 'AppAgent',
-                'automation_type': 'UI_Automation',
-                'target_app': 'Notepad',
-                'action': 'create_new_file_via_clipboard',
-                'result': 'error',
-                'error': str(e),
-                'api_cost': 0.0,
-                'timestamp': time.time()
-            }
-            
-            # 如果 UI 自動化失敗，回退到傳統檔案寫入
-            print("🔄 回退到傳統檔案寫入方式...")
-            try:
-                mode = 'a' if append_mode else 'w'
-                with open(file_path, mode, encoding='utf-8') as file:
-                    if append_mode:
-                        file.write('\n' + content)
-                    else:
-                        file.write(content)
-                print(f"✅ 回退成功：已寫入檔案 {content}")
-                self.session_data['write_operation']['fallback'] = 'traditional_file_write'
-                self.session_data['write_operation']['result'] = 'success_with_fallback'
-            except Exception as fallback_error:
-                print(f"❌ 回退也失敗: {fallback_error}")
-                raise
-
-    def assign_to_variable(self, variable_name="assigned_variable"):
-        """
-        將第一行內容指派到指定變數
-        UFO2 風格的變數管理
-        """
-        if self.first_line is not None:
-            # 在 session 中記錄變數指派
-            self.session_data['variable_assignment'] = {
-                'variable_name': variable_name,
-                'value': self.first_line,
-                'type': type(self.first_line).__name__,
-                'length': len(self.first_line) if self.first_line else 0,
-                'timestamp': time.time()
-            }
-            
-            print(f"📝 變數 '{variable_name}' 已成功指派: '{self.first_line}'")
-            return self.first_line
-        else:
-            print("❌ 無法指派變數：尚未讀取檔案或檔案為空")
-            return None
-
-    def get_session_summary(self):
-        """
-        取得 UFO2 風格的 session 摘要
-        """
-        return {
-            'session_type': 'UFO2_File_Operation_with_Article_Generation',
-            'operations_performed': list(self.session_data.keys()),
-            'session_data': self.session_data,
-            'total_operations': len(self.session_data)
-        }
-
-    def display_file_info(self, file_path):
-        """顯示檔案資訊（UFO2 風格的詳細報告）"""
-        print("\n📊 === UFO2 檔案資訊報告 ===")
+        # 初始化控制檢查器
+        self.inspector = ControlInspectorFacade()
         
-        if os.path.exists(file_path):
-            file_size = os.path.getsize(file_path)
-            print(f"📁 檔案路徑: {file_path}")
-            print(f"📏 檔案大小: {file_size} bytes")
-            print(f"📄 第一行內容: {self.first_line}")
+        # 初始化會話上下文
+        self.context = Context()
+        self.context.set(ContextNames.LOG_PATH, "./logs/chrome_automation/")
+        utils.create_folder("./logs/chrome_automation/")
+        
+    def launch_chrome_with_gmail(self, url="https://mail.google.com/mail/u/0/#inbox"):
+        """
+        啟動 Chrome 瀏覽器並開啟指定 URL
+        """
+        try:
+            print(f"🚀 正在啟動 Chrome 瀏覽器並導航到: {url}")
             
-            # 顯示 session 統計
-            if 'file_operation' in self.session_data:
-                op_data = self.session_data['file_operation']
-                print(f"🕐 操作時間: {time.ctime(op_data['timestamp'])}")
-                print(f"✅ 操作結果: {op_data['result']}")
-                if 'total_lines' in op_data:
-                    print(f"📝 總行數: {op_data['total_lines']}")
-        else:
-            print(f"❌ 檔案 {file_path} 不存在")
+            # 記錄啟動資訊
+            self.session_data['launch_operation'] = {
+                'agent_type': 'HostAgent',
+                'automation_type': 'Browser_Launch',
+                'target_app': 'Chrome',
+                'action': 'launch_with_url',
+                'url': url,
+                'timestamp': time.time(),
+                'status': 'started'
+            }
+            
+            # 方法1: 使用 HostAgent 進行應用程式啟動
+            if self.host_agent:
+                try:
+                    # 構建 LLM 請求來規劃瀏覽器啟動
+                    automation_prompt = [
+                        {
+                            "role": "system", 
+                            "content": "You are a UFO2 HostAgent for launching Chrome browser and navigating to websites. Help plan browser automation tasks."
+                        },
+                        {
+                            "role": "user",
+                            "content": f"Launch a new Chrome browser window and navigate to {url}. Return the automation plan in text format."
+                        }
+                    ]
+                    
+                    # 使用 UFO2 的 LLM API 來規劃瀏覽器啟動
+                    response, cost = get_completion(
+                        automation_prompt,
+                        agent="HOST",  # 使用 HOST Agent
+                        use_backup_engine=True
+                    )
+                    
+                    formatted_cost = f"{float(cost):.3f}" if cost is not None else "0.000"
+                    print(f"🎯 HostAgent 規劃: {response}")
+                    print(f"💰 HostAgent API 成本: ${formatted_cost}")
+                    
+                    # 記錄 AI 規劃結果
+                    self.session_data['launch_operation']['ai_planning'] = response
+                    self.session_data['launch_operation']['api_cost'] = float(cost) if cost is not None else 0.0
+                    
+                except Exception as e:
+                    print(f"⚠️  HostAgent 規劃失敗，將使用直接啟動方式: {e}")
+            
+            # 執行實際的瀏覽器啟動
+            print("📋 執行瀏覽器啟動...")
+            
+            # 方法: 使用系統命令啟動 Chrome 並指定 URL
+            chrome_command = [
+                "chrome.exe",  # Chrome 執行檔
+                "--new-window",  # 開啟新視窗
+                "--start-maximized",  # 最大化視窗
+                url  # 目標 URL
+            ]
+            
+            # 嘗試啟動 Chrome
+            try:
+                process = subprocess.Popen(chrome_command)
+                print(f"✅ Chrome 已啟動，程序 PID: {process.pid}")
+                
+                # 等待 Chrome 完全載入
+                time.sleep(3)
+                
+                # 驗證 Chrome 是否成功啟動
+                chrome_window = self._find_chrome_window()
+                if chrome_window:
+                    print(f"✅ Chrome 視窗已找到: {chrome_window.window_text()}")
+                    self.session_data['launch_operation']['status'] = 'success'
+                    self.session_data['launch_operation']['window_title'] = chrome_window.window_text()
+                    return True
+                else:
+                    print("⚠️  Chrome 視窗未找到，但程序已啟動")
+                    self.session_data['launch_operation']['status'] = 'partial_success'
+                    return True
+                    
+            except FileNotFoundError:
+                # 如果 chrome.exe 不在 PATH 中，嘗試常見的 安裝路徑
+                chrome_paths = [
+                    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                    r"C:\Users\{}\AppData\Local\Google\Chrome\Application\chrome.exe".format(os.getenv('USERNAME')),
+                ]
+                
+                for chrome_path in chrome_paths:
+                    if os.path.exists(chrome_path):
+                        print(f"🔍 在 {chrome_path} 找到 Chrome")
+                        chrome_command[0] = chrome_path
+                        try:
+                            process = subprocess.Popen(chrome_command)
+                            print(f"✅ Chrome 已啟動，程序 PID: {process.pid}")
+                            time.sleep(3)
+                            
+                            chrome_window = self._find_chrome_window()
+                            if chrome_window:
+                                print(f"✅ Chrome 視窗已找到: {chrome_window.window_text()}")
+                                self.session_data['launch_operation']['status'] = 'success'
+                                self.session_data['launch_operation']['window_title'] = chrome_window.window_text()
+                                return True
+                            else:
+                                self.session_data['launch_operation']['status'] = 'partial_success'
+                                return True
+                        except Exception as e:
+                            print(f"❌ 使用路徑 {chrome_path} 啟動失敗: {e}")
+                            continue
+                
+                # 如果所有路徑都失敗，嘗試使用 Windows start 命令
+                print("🔄 嘗試使用 Windows start 命令...")
+                try:
+                    start_command = f'start chrome "{url}"'
+                    os.system(start_command)
+                    time.sleep(3)
+                    
+                    chrome_window = self._find_chrome_window()
+                    if chrome_window:
+                        print(f"✅ Chrome 視窗已找到: {chrome_window.window_text()}")
+                        self.session_data['launch_operation']['status'] = 'success'
+                        self.session_data['launch_operation']['window_title'] = chrome_window.window_text()
+                        return True
+                    else:
+                        print("⚠️  Chrome 可能已啟動，但視窗未找到")
+                        self.session_data['launch_operation']['status'] = 'unknown'
+                        return True
+                        
+                except Exception as e:
+                    print(f"❌ Windows start 命令失敗: {e}")
+                    self.session_data['launch_operation']['status'] = 'error'
+                    self.session_data['launch_operation']['error'] = str(e)
+                    return False
+            
+        except Exception as e:
+            error_msg = f"Chrome 啟動失敗: {str(e)}"
+            print(f"❌ {error_msg}")
+            self.session_data['launch_operation']['status'] = 'error'
+            self.session_data['launch_operation']['error'] = str(e)
+            return False
+    
+    def _find_chrome_window(self):
+        """
+        尋找 Chrome 瀏覽器視窗
+        """
+        try:
+            desktop_windows = self.inspector.get_desktop_windows()
+            
+            for window in desktop_windows:
+                try:
+                    window_text = window.window_text()
+                    # 檢查是否為 Chrome 瀏覽器視窗
+                    if ("Chrome" in window_text or 
+                        "Google Chrome" in window_text or
+                        "Gmail" in window_text or
+                        "mail.google.com" in window_text):
+                        return window
+                except:
+                    continue
+            return None
+        except Exception as e:
+            print(f"⚠️  尋找 Chrome 視窗時發生錯誤: {e}")
+            return None
+    
+    def create_app_agent_for_chrome(self):
+        """
+        為 Chrome 瀏覽器建立 AppAgent
+        """
+        try:
+            if not self.host_agent:
+                print("❌ Host Agent 未初始化，無法建立 App Agent")
+                return None
+                
+            print("🤖 正在為 Chrome 建立 AppAgent...")
+            
+            # 尋找 Chrome 視窗
+            chrome_window = self._find_chrome_window()
+            if not chrome_window:
+                print("❌ 未找到 Chrome 視窗，無法建立 AppAgent")
+                return None
+            
+            # 設定 Chrome 視窗為全螢幕模式
+            print("🖥️  設定 Chrome 視窗為全螢幕模式...")
+            try:
+                # 先聚焦到 Chrome 視窗
+                chrome_window.set_focus()
+                time.sleep(1)
+                
+                # 使用 F11 鍵進入全螢幕模式
+                import pyautogui
+                pyautogui.press('f11')
+                time.sleep(2)  # 等待全螢幕模式生效
+                
+                print("✅ Chrome 視窗已設為全螢幕模式")
+                
+            except Exception as e:
+                print(f"⚠️  設定全螢幕模式失敗: {e}")
+                # 即使全螢幕設定失敗，仍繼續建立 AppAgent
+
+            # 實際建立 AppAgent
+            try:
+                print("🔧 建立 Chrome AppAgent...")
+                
+                # 使用 AgentFactory 建立 AppAgent，提供所有必要參數
+                print("111111")
+                app_agent = AgentFactory.create_agent(
+                    agent_type="app",
+                    name="ChromeAppAgent",
+                    process_name="chrome.exe",
+                    app_root_name="Chrome",
+                    is_visual=True,
+                    main_prompt="",
+                    example_prompt="",
+                    api_prompt=""
+                )
+                print("✅ AppAgent 物件建立成功")
+                
+                # 檢查 AppAgent 可用的屬性和方法
+                print("🔍 檢查 AppAgent 可用的方法...")
+                agent_methods = [method for method in dir(app_agent) if not method.startswith('_')]
+                window_methods = [method for method in agent_methods if 'window' in method.lower()]
+                print(f"📋 視窗相關方法: {window_methods}")
+                
+                # 嘗試設定應用程式視窗（使用容錯處理）
+                try:
+                    # 檢查是否有其他設定視窗的方法
+                    if hasattr(app_agent, 'application_window'):
+                        app_agent.application_window = chrome_window
+                        print("✅ 使用 application_window 屬性設定視窗")
+                    elif hasattr(app_agent, 'app_window'):
+                        app_agent.app_window = chrome_window
+                        print("✅ 使用 app_window 屬性設定視窗")
+                    else:
+                        print("⚠️  AppAgent 沒有視窗設定方法，跳過視窗設定")
+                except Exception as e:
+                    print(f"⚠️  設定視窗失敗: {e}")
+                
+                # 獲取應用程式根名稱
+                try:
+                    app_root_name = chrome_window.window_text()
+                    if not app_root_name:
+                        app_root_name = "Chrome"
+                    
+                    # 嘗試設定應用程式根名稱（使用容錯處理）
+                    if hasattr(app_agent, 'set_app_root_name'):
+                        app_agent.set_app_root_name(app_root_name)
+                        print(f"📱 使用 set_app_root_name: {app_root_name}")
+                    elif hasattr(app_agent, 'app_root_name'):
+                        app_agent.app_root_name = app_root_name
+                        print(f"📱 使用 app_root_name 屬性: {app_root_name}")
+                    else:
+                        print(f"⚠️  無法設定應用程式根名稱，但已記錄: {app_root_name}")
+                        
+                except Exception as e:
+                    print(f"⚠️  設定應用程式根名稱失敗: {e}")
+                    # 設定預設值
+                    app_root_name = "Chrome"
+                
+                # 設定上下文
+                self.context.set(ContextNames.APPLICATION_WINDOW, chrome_window)
+                
+                print("✅ Chrome AppAgent 建立成功")
+                
+                # 記錄 AppAgent 建立資訊
+                self.session_data['app_agent_creation'] = {
+                    'agent_type': 'AppAgent',
+                    'target_app': 'Chrome',
+                    'window_title': chrome_window.window_text(),
+                    'visual_mode': self.config.get("APP_AGENT", {}).get("VISUAL_MODE", True),
+                    'status': 'success',
+                    'timestamp': time.time()
+                }
+                
+                return app_agent
+                
+            except Exception as e:
+                error_msg = f"建立 AppAgent 失敗: {e}"
+                print(f"❌ {error_msg}")
+                self.session_data['app_agent_creation'] = {
+                    'agent_type': 'AppAgent',
+                    'target_app': 'Chrome',
+                    'status': 'error',
+                    'error': str(e),
+                    'timestamp': time.time()
+                }
+                return None
+            
+        except Exception as e:
+            error_msg = f"建立 AppAgent 失敗: {e}"
+            print(f"❌ {error_msg}")
+            self.session_data['app_agent_creation'] = {
+                'agent_type': 'AppAgent',
+                'target_app': 'Chrome',
+                'status': 'error',
+                'error': str(e),
+                'timestamp': time.time()
+            }
+            return None
+    
+    def print_summary(self):
+        """
+        列印自動化操作摘要
+        """
+        print("\n" + "="*60)
+        print("🎯 Chrome 瀏覽器自動化摘要")
+        print("="*60)
+        
+        if 'launch_operation' in self.session_data:
+            launch_data = self.session_data['launch_operation']
+            print(f"🚀 啟動操作:")
+            print(f"   代理類型: {launch_data.get('agent_type', 'N/A')}")
+            print(f"   自動化類型: {launch_data.get('automation_type', 'N/A')}")
+            print(f"   目標應用程式: {launch_data.get('target_app', 'N/A')}")
+            print(f"   操作方式: {launch_data.get('action', 'N/A')}")
+            print(f"   目標 URL: {launch_data.get('url', 'N/A')}")
+            print(f"   狀態: {launch_data.get('status', 'N/A')}")
+            
+            if 'window_title' in launch_data:
+                print(f"   視窗標題: {launch_data['window_title']}")
+            if 'ai_planning' in launch_data:
+                print(f"   AI 規劃: {launch_data['ai_planning']}")
+            if 'api_cost' in launch_data:
+                print(f"   API 成本: ${launch_data['api_cost']:.3f}")
+            if 'error' in launch_data:
+                print(f"   錯誤: {launch_data['error']}")
+        
+        if 'email_selection' in self.session_data:
+            email_data = self.session_data['email_selection']
+            print(f"\n📧 Gmail 信件選取操作:")
+            print(f"   代理類型: {email_data.get('agent_type', 'N/A')}")
+            print(f"   自動化類型: {email_data.get('automation_type', 'N/A')}")
+            print(f"   目標應用程式: {email_data.get('target_app', 'N/A')}")
+            print(f"   操作方式: {email_data.get('action', 'N/A')}")
+            print(f"   搜尋關鍵字: {email_data.get('subject_keyword', 'N/A')}")
+            print(f"   狀態: {email_data.get('status', 'N/A')}")
+            
+            if 'selected_count' in email_data:
+                print(f"   選取信件數量: {email_data['selected_count']}")
+            if 'ai_planning' in email_data:
+                print(f"   AI 規劃: {email_data['ai_planning']}")
+            if 'api_cost' in email_data:
+                print(f"   API 成本: ${email_data['api_cost']:.3f}")
+            if 'error' in email_data:
+                print(f"   錯誤: {email_data['error']}")
+        
+        if 'app_agent_search' in self.session_data:
+            search_data = self.session_data['app_agent_search']
+            print(f"\n🔍 UFO2 AppAgent Gmail 搜尋操作:")
+            print(f"   代理類型: {search_data.get('agent_type', 'N/A')}")
+            print(f"   自動化類型: {search_data.get('automation_type', 'N/A')}")
+            print(f"   目標應用程式: {search_data.get('target_app', 'N/A')}")
+            print(f"   操作方式: {search_data.get('action', 'N/A')}")
+            print(f"   搜尋關鍵字: {search_data.get('search_keyword', 'N/A')}")
+            print(f"   狀態: {search_data.get('status', 'N/A')}")
+            
+            if 'search_completed' in search_data:
+                print(f"   搜尋完成: {search_data['search_completed']}")
+            if 'ai_planning' in search_data:
+                print(f"   AI 規劃: {search_data['ai_planning']}")
+            if 'api_cost' in search_data:
+                print(f"   API 成本: ${search_data['api_cost']:.3f}")
+            if 'error' in search_data:
+                print(f"   錯誤: {search_data['error']}")
+        
+        print("="*60)
+    
+    def simulate_mouse_click_at_position(self, x, y, button='left', duration=0.5):
+        """
+        模擬滑鼠移動到指定位置並點擊
+        
+        參數:
+            x (int): 目標 X 座標
+            y (int): 目標 Y 座標  
+            button (str): 點擊按鈕類型 - 'left', 'right', 'middle'
+            duration (float): 滑鼠移動持續時間（秒）
+        """
+        try:
+            print(f"🖱️  模擬滑鼠移動到位置 ({x}, {y}) 並執行 {button} 點擊...")
+            
+            # 記錄操作資訊
+            self.session_data['mouse_operation'] = {
+                'operation_type': 'mouse_click',
+                'target_position': (x, y),
+                'click_button': button,
+                'duration': duration,
+                'timestamp': time.time(),
+                'status': 'started'
+            }
+            
+            # 導入 GUI 自動化模組
+            try:
+                import pyautogui
+                
+                # 設定 pyautogui 安全設定
+                pyautogui.FAILSAFE = True
+                pyautogui.PAUSE = 0.2
+                
+                print("✅ GUI 自動化模組已載入")
+                
+            except ImportError:
+                print("❌ 缺少 pyautogui，請安裝：pip install pyautogui")
+                self.session_data['mouse_operation']['status'] = 'error'
+                self.session_data['mouse_operation']['error'] = 'Missing pyautogui module'
+                return False
+            
+            # 獲取目前滑鼠位置
+            current_x, current_y = pyautogui.position()
+            print(f"📍 目前滑鼠位置: ({current_x}, {current_y})")
+            
+            # 獲取螢幕尺寸
+            screen_width, screen_height = pyautogui.size()
+            print(f"📺 螢幕尺寸: {screen_width} x {screen_height}")
+            
+            # 驗證座標是否在螢幕範圍內
+            if x < 0 or x > screen_width or y < 0 or y > screen_height:
+                error_msg = f"目標座標 ({x}, {y}) 超出螢幕範圍 (0, 0) - ({screen_width}, {screen_height})"
+                print(f"❌ {error_msg}")
+                self.session_data['mouse_operation']['status'] = 'error'
+                self.session_data['mouse_operation']['error'] = error_msg
+                return False
+            
+            # 步驟1: 平滑移動滑鼠到目標位置
+            print(f"🎯 移動滑鼠到目標位置 ({x}, {y})，持續時間: {duration} 秒...")
+            pyautogui.moveTo(x, y, duration=duration)
+            time.sleep(0.1)  # 短暫停頓確保位置穩定
+            
+            # 驗證滑鼠是否到達目標位置
+            final_x, final_y = pyautogui.position()
+            print(f"📍 滑鼠最終位置: ({final_x}, {final_y})")
+            
+            # 步驟2: 執行點擊操作
+            print(f"🖱️  執行 {button} 點擊...")
+            
+            if button.lower() == 'left':
+                pyautogui.click()
+                print("✅ 左鍵點擊完成")
+            elif button.lower() == 'right':
+                pyautogui.rightClick()
+                print("✅ 右鍵點擊完成")
+            elif button.lower() == 'middle':
+                pyautogui.middleClick()
+                print("✅ 中鍵點擊完成")
+            else:
+                error_msg = f"不支援的點擊按鈕類型: {button}"
+                print(f"❌ {error_msg}")
+                self.session_data['mouse_operation']['status'] = 'error'
+                self.session_data['mouse_operation']['error'] = error_msg
+                return False
+            
+            # 記錄成功
+            self.session_data['mouse_operation']['status'] = 'success'
+            self.session_data['mouse_operation']['final_position'] = (final_x, final_y)
+            
+            print(f"✅ 滑鼠操作完成！已在位置 ({final_x}, {final_y}) 執行 {button} 點擊")
+            
+            return True
+        
+        except Exception as e:
+            error_msg = f"滑鼠操作失敗: {str(e)}"
+            print(f"❌ {error_msg}")
+            self.session_data['mouse_operation']['status'] = 'error'
+            self.session_data['mouse_operation']['error'] = str(e)
+            return False
 
 # ============================= 主程式執行區 =============================
 if __name__ == "__main__":
-    print("🛸 === UFO2 檔案操作測試程式 ===")
-    print(f"🗂️  UFO 框架路徑: {os.path.abspath(UFO_PATH)}")
+    print("=== UFO2 Chrome 瀏覽器自動化程式 ===")
+    print(f"UFO 框架路徑: {os.path.abspath(UFO_PATH)}")
     
     # 檢查配置檔案
     config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
     if os.path.exists(config_path):
-        print(f"⚙️  配置檔案: {config_path}")
+        print(f"配置檔案: {config_path}")
     else:
-        print("⚠️  注意：未找到配置檔案，使用預設設定")
+        print("注意：未找到配置檔案，使用預設設定")
     
     print("-" * 60)
     
-    # ===== 初始化 UFO2 檔案操作代理 =====
-    print("🚀 初始化 UFO2 檔案操作代理...")
-    file_agent = UFO2FileAgent()
+    # ===== 初始化自動化代理 =====
+    chrome_agent = ChromeAutomationAgent()
     
     try:
-        # ===== 設定要開啟的檔案路徑 =====
-        doc_file_path = os.path.join(os.path.dirname(__file__), "doc.txt")
+        # ===== 執行 Chrome 自動化流程 =====
         
-        # ===== 執行 UFO2 檔案操作流程 =====
-        print("\n🔄 開始執行 UFO2 檔案操作流程...")
+        # 步驟1: 啟動 Chrome 瀏覽器並開啟 Gmail
+        gmail_url = "https://mail.google.com/mail/u/0/#inbox"
+        success = chrome_agent.launch_chrome_with_gmail(gmail_url)
         
-        # 步驟1: 開啟 doc.txt 檔案並讀取第一行
-        print("\n📖 步驟1: 讀取檔案第一行")
-        first_line_content = file_agent.open_and_read_file(doc_file_path)
-        
-        # 步驟2: 將第一行內容指派到變數
-        print("\n📝 步驟2: 指派變數")
-        assigned_variable = file_agent.assign_to_variable("assigned_variable")
-        
-        # 步驟3: 使用 Host Agent 進行中文專題報告生成
-        print("\n🌐 步驟3: 使用 UFO2 Host Agent 生成專題報告")
-        if assigned_variable:
-            translated_text = file_agent.translate_with_host_agent(assigned_variable)
+        if success:
+            print(f"✅ Chrome 瀏覽器已成功啟動並導航到 Gmail")
+            
+            # 步驟2: （可選）建立 AppAgent 用於後續網頁操作
+            print("\n🤖 建立 Chrome AppAgent 用於後續網頁操作...")
+            app_agent = chrome_agent.create_app_agent_for_chrome()
+            if app_agent:
+                print("✅ Chrome AppAgent 已建立，可用於後續網頁自動化操作")
+            else:
+                print("⚠️  Chrome AppAgent 建立失敗，但瀏覽器已成功啟動")
+            
+            # 步驟3: 等待用戶確認 Gmail 已完全載入
+            print("\n⏳ 等待 Gmail 完全載入...")
+            time.sleep(5)  # 給 Gmail 更多時間載入
+            
+            # 步驟4: 使用 UFO2 AppAgent 搜尋 Gmail
+            print("\n🔍 步驟4: 使用 UFO2 AppAgent 在 Gmail 中搜尋...")
+            
+            if app_agent:
+                # 使用新建立的 AppAgent 搜尋方法
+               
+                print("\n🔍 步驟2: 執行 Gmail 搜尋和信件選取...")
+                
+                # 點擊搜尋框
+                print("🎯 點擊 Gmail 搜尋框...")
+                chrome_agent.simulate_mouse_click_at_position(280, 20, button='left', duration=0.5)
+                time.sleep(1)
+                
+                # 輸入搜尋關鍵字 多結果子
+                print("⌨️  輸入搜尋關鍵字: 多結果子")
+                import pyautogui
+                import pyperclip
+                
+                # 使用剪貼簿來輸入中文字，確保字符正確性
+                search_keyword = "多結果子"
+                pyperclip.copy(search_keyword)  # 複製到剪貼簿
+                time.sleep(0.2)  # 等待剪貼簿操作完成
+                
+                # 使用 Ctrl+V 貼上
+                pyautogui.hotkey('ctrl', 'v')
+                print(f"✅ 已使用剪貼簿輸入關鍵字: {search_keyword}")
+                time.sleep(0.5)
+                
+                # 按 Enter 執行搜尋
+                print("🔍 按 Enter 執行搜尋...")
+                pyautogui.press('enter')
+                time.sleep(3)  # 等待搜尋結果載入
+                
+                print("✅ Gmail 搜尋任務完成！已搜尋關鍵字：多結果子")
+                
+                # 步驟5: 選擇前5筆郵件的checkbox
+                print("\n📧 步驟5: 選擇前5筆郵件...")
+                
+                # 等待搜尋結果完全載入
+                print("⏳ 等待搜尋結果完全載入...")
+                time.sleep(2)
+                
+                # Gmail 郵件列表中 checkbox 的大致位置（需要根據實際頁面調整）
+                # 假設郵件列表從 Y=150 開始，每筆郵件高度約 40-50 像素
+                # checkbox 通常在郵件列表左側，X 座標約在 155 左右
+                
+                checkbox_x = 258  # checkbox 的 X 座標
+                start_y = 150     # 第一筆郵件的 Y 座標
+                email_height = 45 # 每筆郵件的高度
+                
+                selected_count = 0
+                max_emails = 5
+                
+                print(f"🎯 開始選擇前 {max_emails} 筆郵件的 checkbox...")
+                
+                for i in range(max_emails):
+                    # 計算當前郵件 checkbox 的 Y 座標
+                    current_y = start_y + (i * email_height)
+                    
+                    try:
+                        print(f"📍 點擊第 {i+1} 筆郵件的 checkbox 位置: ({checkbox_x}, {current_y})")
+                        
+                        # 點擊 checkbox
+                        success = chrome_agent.simulate_mouse_click_at_position(
+                            checkbox_x, 
+                            current_y, 
+                            button='left', 
+                            duration=0.3
+                        )
+                        
+                        if success:
+                            selected_count += 1
+                            print(f"✅ 第 {i+1} 筆郵件已選取")
+                            time.sleep(0.5)  # 每次點擊間隔
+                        else:
+                            print(f"⚠️  第 {i+1} 筆郵件選取失敗")
+                            
+                    except Exception as e:
+                        print(f"❌ 選取第 {i+1} 筆郵件時發生錯誤: {e}")
+                        continue
+                
+                # 記錄選取結果
+                chrome_agent.session_data['email_selection'] = {
+                    'agent_type': 'MouseAutomation',
+                    'automation_type': 'Email_Selection',
+                    'target_app': 'Gmail',
+                    'action': 'select_checkboxes',
+                    'search_keyword': '多結果子',
+                    'selected_count': selected_count,
+                    'target_count': max_emails,
+                    'status': 'completed' if selected_count > 0 else 'failed',
+                    'timestamp': time.time()
+                }
+                
+                if selected_count > 0:
+                    print(f"🎉 Gmail 郵件選取完成！已成功選取 {selected_count} 筆郵件")
+                else:
+                    print("❌ 未能選取任何郵件，請檢查頁面佈局或座標設定")
+                
+                #search_success = chrome_agent.search_gmail_by_input_click("多結果子")
+                # if search_success:
+                #     print("✅ Gmail 搜尋和選取完成")
+                # else:
+                #     print("❌ Gmail 搜尋和選取失敗")
+                    
+                # if search_success:
+                #     print("✅ UFO2 AppAgent Gmail 搜尋完成")
+                #     print("📧 已在 Gmail 中搜尋關鍵字：多結果子")
+                    
+                #     # 額外等待時間讓搜尋結果完全載入
+                #     print("⏳ 等待搜尋結果完全載入...")
+                #     time.sleep(3)
+                    
+                # else:
+                #     print("❌ UFO2 AppAgent Gmail 搜尋失敗")
+                #     print("🔄 嘗試使用備用搜尋方法...")
+                    
+                #     # 備用方法：使用原有的搜尋功能
+                #     backup_success = chrome_agent.select_gmail_emails_by_subject("多結果子")
+                #     if backup_success:
+                #         print("✅ 備用搜尋方法成功")
+                #     else:
+                #         print("❌ 備用搜尋方法也失敗")
+            
+                
+            # 等待一段時間讓用戶觀察結果
+            time.sleep(2)
+            
         else:
-            translated_text = ""
-            print("⚠️  無法生成報告：變數為空")
+            print("❌ Chrome 瀏覽器啟動失敗")
         
-        # 步驟4: 將專題報告寫入檔案的下一行
-        print("\n💾 步驟4: 將專題報告寫入檔案")
-        if translated_text:
-            file_agent.write_to_file(doc_file_path, translated_text, append_mode=True)
-            print(f"✅ 專題報告已寫入檔案: {translated_text}")
-        else:
-            print("⚠️  無法寫入：專題報告為空")
-        
-        # 步驟5: 顯示結果
-        print("\n🎯 === UFO2 操作結果 ===")
-        print(f"✅ 原始內容: '{assigned_variable}'")
-        print(f"✅ 專題報告: '{translated_text}'")
-        print(f"✅ 專題報告已追加到檔案中")
-        
-        # 步驟6: 顯示檔案資訊
-        file_agent.display_file_info(doc_file_path)
-        
-        # ===== UFO2 風格的變數驗證 =====
-        print(f"\n🔍 === UFO2 變數驗證 ===")
-        session_summary = file_agent.get_session_summary()
-        
-        if 'variable_assignment' in session_summary['session_data']:
-            var_data = session_summary['session_data']['variable_assignment']
-            print(f"📊 變數名稱: {var_data['variable_name']}")
-            print(f"💾 變數值: '{var_data['value']}'")
-            print(f"🏷️  變數類型: {var_data['type']}")
-            print(f"📏 變數長度: {var_data['length']}")
-        
-        # ===== UFO2 專題報告生成統計 =====
-        if 'translation' in session_summary['session_data']:
-            trans_data = session_summary['session_data']['translation']
-            print(f"\n📝 === UFO2 專題報告生成統計 ===")
-            print(f"📖 原始內容: {trans_data['original_text']}")
-            print(f"📋 專題報告: {trans_data['translated_text']}")
-            print(f"💰 成本: ${trans_data['cost']:.3f}")
-            print(f"🕐 生成時間: {time.ctime(trans_data['timestamp'])}")
-        
-        # ===== UFO2 Session 摘要 =====
-        print(f"\n📋 === UFO2 Session 摘要 ===")
-        print(f"🔧 Session 類型: {session_summary['session_type']}")
-        print(f"⚡ 執行的操作: {', '.join(session_summary['operations_performed'])}")
-        print(f"📈 總操作數: {session_summary['total_operations']}")
-        
-        # ===== UFO2 AppAgent UI 自動化統計 =====
-        if 'write_operation' in session_summary['session_data']:
-            write_data = session_summary['session_data']['write_operation']
-            print(f"\n💾 === UFO2 AppAgent UI 自動化統計 ===")
-            print(f"🤖 代理類型: {write_data.get('agent_type', 'Unknown')}")
-            print(f"🎮 自動化類型: {write_data.get('automation_type', 'N/A')}")
-            print(f"�️  目標應用程式: {write_data.get('target_app', 'N/A')}")
-            print(f"⌨️ 操作方式: {write_data.get('action', 'N/A')}")
-            print(f"�📝 輸入內容: {write_data.get('content', 'N/A')}")
-            print(f"📁 檔案路徑: {write_data.get('file_path', 'N/A')}")
-            if 'automation_steps' in write_data:
-                print(f"� 自動化步驟: {' → '.join(write_data['automation_steps'])}")
-            print(f"💰 API 成本: ${write_data.get('api_cost', 0.0):.3f}")
-            print(f"✅ 操作結果: {write_data.get('result', 'N/A')}")
-            if 'fallback' in write_data:
-                print(f"🔄 回退方式: {write_data['fallback']}")
-            print(f"🕐 操作時間: {time.ctime(write_data['timestamp'])}")
-        
-        # ===== 檢查最終檔案內容 =====
-        print(f"\n📄 === 最終檔案內容 ===")
-        try:
-            with open(doc_file_path, 'r', encoding='utf-8') as file:
-                final_content = file.read()
-                lines = final_content.splitlines()
-                for i, line in enumerate(lines, 1):
-                    print(f"第{i}行: {line}")
-        except Exception as e:
-            print(f"❌ 讀取最終檔案內容失敗: {e}")
+        # ===== 顯示操作摘要 =====
+        #chrome_agent.print_summary()
         
         # ===== 成功完成提示 =====
-        print("\n🎉 整個 UFO2 檔案操作流程執行完成！")
-        print("✅ 檔案已成功開啟，第一行內容已指派到變數中")
-        print("✅ 中文專題報告已成功生成")
-        print("✅ 專題報告已寫入檔案下一行")
-        print("🛸 UFO2 架構操作完成！")
+        # print("\n✅ UFO2 Chrome 自動化流程執行完成！")
+        # print("💡 Chrome 瀏覽器現在應該已經開啟並顯示 Gmail 收件箱")
         
     except Exception as e:
         # ===== 錯誤處理 =====
-        print(f"\n❌ UFO2 操作失敗：{str(e)}")
-        print("🔧 請檢查檔案路徑和權限設定")
-        print("🔧 請確認 LLM 配置正確")
+        print(f"❌ 操作失敗：{str(e)}")
+        import traceback
+        traceback.print_exc()
