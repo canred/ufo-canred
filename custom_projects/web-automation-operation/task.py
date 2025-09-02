@@ -15,6 +15,10 @@ os.environ.setdefault('UFO_CONFIG_PATH', os.path.join(os.path.dirname(__file__),
 # 導入 UFO2 基本模組
 import time
 import subprocess
+import json
+import asyncio
+import websockets
+import requests
 from ufo.module.basic import BaseSession
 from ufo.config.config import Config
 from ufo.agents.agent.host_agent import HostAgent, AgentFactory
@@ -124,6 +128,8 @@ class ChromeAutomationAgent:
                 "chrome.exe",  # Chrome 執行檔
                 "--new-window",  # 開啟新視窗
                 "--start-maximized",  # 最大化視窗
+                "--remote-debugging-port=9222",  # 啟用調試端口
+                # "--user-data-dir=C:\\ChromeDebugProfile",  # 指定用戶數據目錄
                 url  # 目標 URL
             ]
             
@@ -230,6 +236,56 @@ class ChromeAutomationAgent:
         except Exception as e:
             print(f"⚠️  尋找 Chrome 視窗時發生錯誤: {e}")
             return None
+    
+    def ensure_chrome_window_active(self):
+        """
+        確保 Chrome 視窗處於活動狀態
+        """
+        try:
+            chrome_window = self._find_chrome_window()
+            if chrome_window:
+                # 檢查視窗是否已經是活動視窗
+                try:
+                    # 使用 set_focus 方法激活視窗
+                    chrome_window.set_focus()
+                    time.sleep(0.2)  # 短暫等待確保視窗獲得焦點
+                    print(f"✅ Chrome 視窗已激活: {chrome_window.window_text()}")
+                    return True
+                except Exception as e:
+                    print(f"⚠️  使用 set_focus 激活失敗，嘗試其他方法: {e}")
+                    
+                    # 備用方法：如果視窗有 activate 方法
+                    try:
+                        if hasattr(chrome_window, 'activate'):
+                            chrome_window.activate()
+                            time.sleep(0.2)
+                            print("✅ 使用 activate 方法成功激活 Chrome 視窗")
+                            return True
+                    except Exception as e2:
+                        print(f"⚠️  activate 方法也失敗: {e2}")
+                    
+                    # 最後備用方法：使用 pyautogui 點擊視窗
+                    try:
+                        import pyautogui
+                        # 獲取視窗矩形區域
+                        rect = chrome_window.rectangle()
+                        center_x = (rect.left + rect.right) // 2
+                        center_y = (rect.top + rect.bottom) // 2
+                        
+                        # 點擊視窗中心來激活
+                        pyautogui.click(center_x, center_y)
+                        time.sleep(0.2)
+                        print("✅ 使用滑鼠點擊成功激活 Chrome 視窗")
+                        return True
+                    except Exception as e3:
+                        print(f"⚠️  滑鼠點擊激活也失敗: {e3}")
+                        return False
+            else:
+                print("❌ 未找到 Chrome 視窗")
+                return False
+        except Exception as e:
+            print(f"❌ 確保 Chrome 視窗活動時發生錯誤: {e}")
+            return False
     
     def create_app_agent_for_chrome(self):
         """
@@ -531,18 +587,127 @@ class ChromeAutomationAgent:
             self.session_data['mouse_operation']['error'] = str(e)
             return False
 
+    async def check_navigation(self):
+        """
+        檢查頁面導航狀態
+        使用 Chrome DevTools Protocol 驗證頁面載入和 URL 跳轉
+        """
+        try:
+            print("🔍 檢查頁面導航狀態...")
+            
+            # 1. 获取目标标签页的调试链接
+            try:
+                response = requests.get("http://localhost:9222/json", timeout=5)
+                tabs = response.json()
+            except requests.RequestException as e:
+                print(f"❌ 無法連接到 Chrome 調試端口: {e}")
+                return False
+            
+            # 尋找包含 Gmail 關鍵字的標籤頁
+            target_tab = None
+            for tab in tabs:
+                url = tab.get("url", "")
+                if any(keyword in url.lower() for keyword in ["mail.google.com", "gmail"]):
+                    target_tab = tab
+                    break
+            
+            if not target_tab:
+                print("❌ 未找到 Gmail 標籤頁")
+                return False
+                
+            print(f"✅ 找到目標標籤頁: {target_tab['url']}")
+            ws_url = target_tab["webSocketDebuggerUrl"]
+
+            # 2. 连接调试接口，验证跳转
+            async with websockets.connect(ws_url) as ws:
+                # 启用页面事件
+                await ws.send(json.dumps({"id": 1, "method": "Page.enable"}))
+                response = await ws.recv()
+                print(f"📄 Page.enable 響應: {json.loads(response).get('result', 'OK')}")
+                
+                # 启用运行时
+                await ws.send(json.dumps({"id": 2, "method": "Runtime.enable"}))
+                await ws.recv()
+                
+                # 設置超時機制，避免無限等待
+                timeout_seconds = 10
+                start_time = time.time()
+                page_loaded = False
+                
+                print("⏳ 等待頁面載入完成事件...")
+                
+                # 等待页面加载完成事件
+                while time.time() - start_time < timeout_seconds:
+                    try:
+                        # 設置較短的超時，避免阻塞
+                        message = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                        message_data = json.loads(message)
+                        
+                        # 檢查是否為頁面載入完成事件
+                        method = message_data.get("method", "")
+                        if method in ["Page.domContentEventFired", "Page.loadEventFired"]:
+                            print(f"✅ 頁面載入事件已觸發: {method}")
+                            page_loaded = True
+                            break
+                            
+                    except asyncio.TimeoutError:
+                        # 沒有收到事件，繼續等待
+                        continue
+                    except json.JSONDecodeError:
+                        # 忽略無效的 JSON 訊息
+                        continue
+                
+                # 如果沒有等到載入事件，也繼續檢查 URL
+                if not page_loaded:
+                    print("⚠️  未收到頁面載入事件，但繼續檢查 URL")
+                
+                # 3. 获取当前URL并验证
+                await ws.send(json.dumps({
+                    "id": 3, "method": "Runtime.evaluate",
+                    "params": {"expression": "window.location.href"}
+                }))
+                result = await ws.recv()
+                result_data = json.loads(result)
+                
+                if "result" in result_data and "result" in result_data["result"]:
+                    current_url = result_data["result"]["result"]["value"]
+                    print(f"🌐 當前 URL: {current_url}")
+                    
+                    # 檢查是否為預期的 Gmail 相關 URL
+                    expected_keywords = ["mail.google.com", "gmail"]
+                    if any(keyword in current_url.lower() for keyword in expected_keywords):
+                        print("✅ 頁面導航成功 - URL 驗證通過")
+                        return True
+                    else:
+                        print(f"❌ 頁面導航失敗 - 當前URL不符合預期: {current_url}")
+                        return False
+                else:
+                    print("❌ 無法獲取當前 URL")
+                    print(f"調試資訊: {result_data}")
+                    return False
+                    
+        except websockets.exceptions.ConnectionClosed as e:
+            print(f"❌ WebSocket 連接已關閉: {e}")
+            return False
+        except websockets.exceptions.WebSocketException as e:
+            print(f"❌ WebSocket 連接錯誤: {e}")
+            return False
+        except Exception as e:
+            print(f"❌ 檢查導航時發生錯誤: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+                
 # ============================= 主程式執行區 =============================
 if __name__ == "__main__":
     print("=== UFO2 Chrome 瀏覽器自動化程式 ===")
-    print(f"UFO 框架路徑: {os.path.abspath(UFO_PATH)}")
-    
+    print(f"UFO 框架路徑: {os.path.abspath(UFO_PATH)}")    
     # 檢查配置檔案
     config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
     if os.path.exists(config_path):
         print(f"配置檔案: {config_path}")
     else:
-        print("注意：未找到配置檔案，使用預設設定")
-    
+        print("注意：未找到配置檔案，使用預設設定")    
     print("-" * 60)
     
     # ===== 初始化自動化代理 =====
@@ -556,8 +721,7 @@ if __name__ == "__main__":
         success = chrome_agent.launch_chrome_with_gmail(gmail_url)
         
         if success:
-            print(f"✅ Chrome 瀏覽器已成功啟動並導航到 Gmail")
-            
+            print(f"✅ Chrome 瀏覽器已成功啟動並導航到 Gmail")            
             # 步驟2: （可選）建立 AppAgent 用於後續網頁操作
             print("\n🤖 建立 Chrome AppAgent 用於後續網頁操作...")
             app_agent = chrome_agent.create_app_agent_for_chrome()
@@ -568,7 +732,7 @@ if __name__ == "__main__":
             
             # 步驟3: 等待用戶確認 Gmail 已完全載入
             print("\n⏳ 等待 Gmail 完全載入...")
-            time.sleep(5)  # 給 Gmail 更多時間載入
+            time.sleep(2)  # 給 Gmail 更多時間載入
             
             # 步驟4: 使用 UFO2 AppAgent 搜尋 Gmail
             print("\n🔍 步驟4: 使用 UFO2 AppAgent 在 Gmail 中搜尋...")
@@ -593,15 +757,26 @@ if __name__ == "__main__":
                 pyperclip.copy(search_keyword)  # 複製到剪貼簿
                 time.sleep(0.2)  # 等待剪貼簿操作完成
                 
+                # 檢查頁面導航狀態（異步調用）
+                print("🔍 檢查頁面導航狀態...")
+                try:
+                    navigation_success = asyncio.run(chrome_agent.check_navigation())
+                    if navigation_success:
+                        print("✅ 頁面導航驗證成功")
+                    else:
+                        print("❌ 頁面導航驗證失敗")
+                except Exception as e:
+                    print(f"⚠️  導航檢查失敗: {e}")
+                
                 # 使用 Ctrl+V 貼上
                 pyautogui.hotkey('ctrl', 'v')
                 print(f"✅ 已使用剪貼簿輸入關鍵字: {search_keyword}")
-                time.sleep(0.5)
+                # time.sleep(0.5)
                 
                 # 按 Enter 執行搜尋
                 print("🔍 按 Enter 執行搜尋...")
                 pyautogui.press('enter')
-                time.sleep(3)  # 等待搜尋結果載入
+                time.sleep(2)  # 等待搜尋結果載入
                 
                 print("✅ Gmail 搜尋任務完成！已搜尋關鍵字：多結果子")
                 
@@ -610,15 +785,15 @@ if __name__ == "__main__":
                 
                 # 等待搜尋結果完全載入
                 print("⏳ 等待搜尋結果完全載入...")
-                time.sleep(2)
+                
                 
                 # Gmail 郵件列表中 checkbox 的大致位置（需要根據實際頁面調整）
                 # 假設郵件列表從 Y=150 開始，每筆郵件高度約 40-50 像素
                 # checkbox 通常在郵件列表左側，X 座標約在 155 左右
                 
-                checkbox_x = 258  # checkbox 的 X 座標
-                start_y = 150     # 第一筆郵件的 Y 座標
-                email_height = 45 # 每筆郵件的高度
+                checkbox_x = 255  # checkbox 的 X 座標
+                start_y = 155     # 第一筆郵件的 Y 座標
+                email_height = 25 # 每筆郵件的高度
                 
                 selected_count = 0
                 max_emails = 5
@@ -626,6 +801,10 @@ if __name__ == "__main__":
                 print(f"🎯 開始選擇前 {max_emails} 筆郵件的 checkbox...")
                 
                 for i in range(max_emails):
+                    # 確認 Chrome 視窗是正確的 active window，如果不是，先切換過去
+                    print(f"🖥️  確保 Chrome 視窗處於活動狀態...")
+                    chrome_agent.ensure_chrome_window_active()
+                   
                     # 計算當前郵件 checkbox 的 Y 座標
                     current_y = start_y + (i * email_height)
                     
@@ -637,13 +816,13 @@ if __name__ == "__main__":
                             checkbox_x, 
                             current_y, 
                             button='left', 
-                            duration=0.3
+                            duration=0.1
                         )
                         
                         if success:
                             selected_count += 1
                             print(f"✅ 第 {i+1} 筆郵件已選取")
-                            time.sleep(0.5)  # 每次點擊間隔
+                            # time.sleep(0.5)  # 每次點擊間隔
                         else:
                             print(f"⚠️  第 {i+1} 筆郵件選取失敗")
                             
@@ -669,34 +848,9 @@ if __name__ == "__main__":
                 else:
                     print("❌ 未能選取任何郵件，請檢查頁面佈局或座標設定")
                 
-                #search_success = chrome_agent.search_gmail_by_input_click("多結果子")
-                # if search_success:
-                #     print("✅ Gmail 搜尋和選取完成")
-                # else:
-                #     print("❌ Gmail 搜尋和選取失敗")
-                    
-                # if search_success:
-                #     print("✅ UFO2 AppAgent Gmail 搜尋完成")
-                #     print("📧 已在 Gmail 中搜尋關鍵字：多結果子")
-                    
-                #     # 額外等待時間讓搜尋結果完全載入
-                #     print("⏳ 等待搜尋結果完全載入...")
-                #     time.sleep(3)
-                    
-                # else:
-                #     print("❌ UFO2 AppAgent Gmail 搜尋失敗")
-                #     print("🔄 嘗試使用備用搜尋方法...")
-                    
-                #     # 備用方法：使用原有的搜尋功能
-                #     backup_success = chrome_agent.select_gmail_emails_by_subject("多結果子")
-                #     if backup_success:
-                #         print("✅ 備用搜尋方法成功")
-                #     else:
-                #         print("❌ 備用搜尋方法也失敗")
+                # 我要將執行畫面截圖下來,同時加截圖的內容發給 openai 進行 OCR 辨識
             
                 
-            # 等待一段時間讓用戶觀察結果
-            time.sleep(2)
             
         else:
             print("❌ Chrome 瀏覽器啟動失敗")
