@@ -1,0 +1,13 @@
+# UFO2 Chrome 自動化程式所需套件
+pyautogui>=0.9.54
+pyperclip>=1.8.2
+pillow>=10.0.0
+requests>=2.31.0
+opencv-python>=4.8.0
+selenium>=4.15.0
+websockets>=11.0.3
+openai>=1.3.0
+
+# 以下套件為可選，僅在需要數據分析功能時安裝
+# numpy>=1.24.0,<2.0.0
+# pandas>=2.0.0
