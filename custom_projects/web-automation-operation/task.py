@@ -970,7 +970,32 @@ class ChromeAutomationAgent:
             
             # 截取螢幕截圖
             print("🖥️  正在截取螢幕截圖...")
-            screenshot = pyautogui.screenshot()
+            
+            # 獲取當前滑鼠位置
+            mouse_x, mouse_y = pyautogui.position()
+            print(f"📍 滑鼠位置: ({mouse_x}, {mouse_y})")
+            
+            # 計算截圖區域 (以滑鼠為中心的 600x600 正方形)
+            screenshot_size = 300
+            half_size = screenshot_size // 2
+            
+            # 計算截圖的左上角座標
+            left = mouse_x - half_size
+            top = mouse_y - half_size
+            
+            # 獲取螢幕尺寸
+            screen_width, screen_height = pyautogui.size()
+            
+            # 確保截圖區域不超出螢幕邊界
+            left = max(0, min(left, screen_width - screenshot_size))
+            top = max(0, min(top, screen_height - screenshot_size))
+            right = left + screenshot_size
+            bottom = top + screenshot_size
+            
+            print(f"📐 截圖區域: ({left}, {top}) 到 ({right}, {bottom})")
+            
+            # 截取指定區域的螢幕截圖
+            screenshot = pyautogui.screenshot(region=(left, top, screenshot_size, screenshot_size))
             
             # 保存截圖
             screenshot.save(save_path)
@@ -986,22 +1011,22 @@ class ChromeAutomationAgent:
             }
             
             # 如果需要進行 OCR 分析
-            # if ocr_analysis:
-            #     print("🔍 開始進行 UFO2 OCR 辨識...")
-            #     ocr_result = self._perform_ufo2_ocr(screenshot)
+            if ocr_analysis:
+                print("🔍 開始進行 UFO2 OCR 辨識...")
+                ocr_result = self._perform_ufo2_ocr(screenshot)
                 
-            #     if ocr_result['success']:
-            #         result['ocr_result'] = ocr_result['text']
-            #         result['ocr_cost'] = ocr_result.get('cost', 0.0)
-            #         result['ocr_method'] = ocr_result.get('method', 'UFO2_LLM')
-            #         print("✅ UFO2 OCR 辨識完成")
-            #         screenshot_operation['ocr_completed'] = True
-            #         screenshot_operation['ocr_cost'] = ocr_result.get('cost', 0.0)
-            #         screenshot_operation['ocr_method'] = ocr_result.get('method', 'UFO2_LLM')
-            #     else:
-            #         result['ocr_error'] = ocr_result['error']
-            #         print(f"❌ UFO2 OCR 辨識失敗: {ocr_result['error']}")
-            #         screenshot_operation['ocr_error'] = ocr_result['error']
+                if ocr_result['success']:
+                    result['ocr_result'] = ocr_result['text']
+                    result['ocr_cost'] = ocr_result.get('cost', 0.0)
+                    result['ocr_method'] = ocr_result.get('method', 'UFO2_LLM')
+                    print("✅ UFO2 OCR 辨識完成")
+                    screenshot_operation['ocr_completed'] = True
+                    screenshot_operation['ocr_cost'] = ocr_result.get('cost', 0.0)
+                    screenshot_operation['ocr_method'] = ocr_result.get('method', 'UFO2_LLM')
+                else:
+                    result['ocr_error'] = ocr_result['error']
+                    print(f"❌ UFO2 OCR 辨識失敗: {ocr_result['error']}")
+                    screenshot_operation['ocr_error'] = ocr_result['error']
             
             screenshot_operation['status'] = 'success'
             self.session_data['screenshot_operation'] = screenshot_operation
