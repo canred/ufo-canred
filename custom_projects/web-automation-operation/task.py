@@ -19,6 +19,10 @@ import json
 import asyncio
 import websockets
 import requests
+import base64
+from datetime import datetime
+from PIL import Image
+import io
 from ufo.module.basic import BaseSession
 from ufo.config.config import Config
 from ufo.agents.agent.host_agent import HostAgent, AgentFactory
@@ -487,6 +491,27 @@ class ChromeAutomationAgent:
             if 'error' in search_data:
                 print(f"   錯誤: {search_data['error']}")
         
+        if 'screenshot_operation' in self.session_data:
+            screenshot_data = self.session_data['screenshot_operation']
+            print(f"\n📸 螢幕截圖和 UFO2 OCR 操作:")
+            print(f"   操作類型: {screenshot_data.get('operation_type', 'N/A')}")
+            print(f"   狀態: {screenshot_data.get('status', 'N/A')}")
+            
+            if 'screenshot_path' in screenshot_data:
+                print(f"   截圖檔案: {screenshot_data['screenshot_path']}")
+            if 'screenshot_saved' in screenshot_data:
+                print(f"   截圖已保存: {screenshot_data['screenshot_saved']}")
+            if 'ocr_completed' in screenshot_data:
+                print(f"   UFO2 OCR 已完成: {screenshot_data['ocr_completed']}")
+            if 'ocr_method' in screenshot_data:
+                print(f"   OCR 方法: {screenshot_data['ocr_method']}")
+            if 'ocr_cost' in screenshot_data:
+                print(f"   UFO2 OCR 成本: ${screenshot_data['ocr_cost']:.4f}")
+            if 'error' in screenshot_data:
+                print(f"   錯誤: {screenshot_data['error']}")
+            if 'ocr_error' in screenshot_data:
+                print(f"   UFO2 OCR 錯誤: {screenshot_data['ocr_error']}")
+        
         print("="*60)
     
     def simulate_mouse_click_at_position(self, x, y, button='left', duration=0.5):
@@ -697,6 +722,363 @@ class ChromeAutomationAgent:
             import traceback
             traceback.print_exc()
             return False
+
+    def capture_screenshot_and_ocr(self, save_path=None, ocr_analysis=True):
+        """
+        截取當前螢幕截圖並可選進行 OCR 辨識
+        
+        參數:
+            save_path (str): 截圖保存路徑，如果為 None 則自動生成
+            ocr_analysis (bool): 是否進行 OCR 分析
+            
+        返回:
+            dict: 包含截圖路徑和 OCR 結果的字典
+        """
+        try:
+            print("📸 開始進行螢幕截圖...")
+            
+            # 記錄操作資訊
+            screenshot_operation = {
+                'operation_type': 'screenshot_and_ocr',
+                'timestamp': time.time(),
+                'status': 'started'
+            }
+            
+            # 導入必要模組
+            try:
+                import pyautogui
+                from PIL import Image
+                import io
+                import base64
+            except ImportError as e:
+                error_msg = f"缺少必要模組: {e}。請安裝: pip install pyautogui pillow"
+                print(f"❌ {error_msg}")
+                screenshot_operation['status'] = 'error'
+                screenshot_operation['error'] = error_msg
+                return {'success': False, 'error': error_msg}
+            
+            # 生成截圖檔案路徑
+            if save_path is None:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                screenshots_dir = os.path.join(os.path.dirname(__file__), "logs", "screenshots")
+                os.makedirs(screenshots_dir, exist_ok=True)
+                save_path = os.path.join(screenshots_dir, f"screenshot_{timestamp}.png")
+            
+            # 截取螢幕截圖
+            print("🖥️  正在截取螢幕截圖...")
+            screenshot = pyautogui.screenshot()
+            
+            # 保存截圖
+            screenshot.save(save_path)
+            print(f"✅ 截圖已保存到: {save_path}")
+            
+            screenshot_operation['screenshot_path'] = save_path
+            screenshot_operation['screenshot_saved'] = True
+            
+            result = {
+                'success': True,
+                'screenshot_path': save_path,
+                'screenshot_size': screenshot.size
+            }
+            
+            # 如果需要進行 OCR 分析
+            if ocr_analysis:
+                print("🔍 開始進行 UFO2 OCR 辨識...")
+                ocr_result = self._perform_ufo2_ocr(screenshot)
+                
+                if ocr_result['success']:
+                    result['ocr_result'] = ocr_result['text']
+                    result['ocr_cost'] = ocr_result.get('cost', 0.0)
+                    result['ocr_method'] = ocr_result.get('method', 'UFO2_LLM')
+                    print("✅ UFO2 OCR 辨識完成")
+                    screenshot_operation['ocr_completed'] = True
+                    screenshot_operation['ocr_cost'] = ocr_result.get('cost', 0.0)
+                    screenshot_operation['ocr_method'] = ocr_result.get('method', 'UFO2_LLM')
+                else:
+                    result['ocr_error'] = ocr_result['error']
+                    print(f"❌ UFO2 OCR 辨識失敗: {ocr_result['error']}")
+                    screenshot_operation['ocr_error'] = ocr_result['error']
+            
+            screenshot_operation['status'] = 'success'
+            self.session_data['screenshot_operation'] = screenshot_operation
+            
+            return result
+            
+        except Exception as e:
+            error_msg = f"截圖操作失敗: {str(e)}"
+            print(f"❌ {error_msg}")
+            screenshot_operation['status'] = 'error'
+            screenshot_operation['error'] = str(e)
+            self.session_data['screenshot_operation'] = screenshot_operation
+            return {'success': False, 'error': error_msg}
+    
+    def _perform_ufo2_ocr(self, image):
+        """
+        使用 UFO2 框架的 LLM 進行 OCR 辨識
+        
+        參數:
+            image (PIL.Image): 要進行 OCR 的圖片
+            
+        返回:
+            dict: OCR 結果
+        """
+        try:
+            print("🤖 正在使用 UFO2 LLM 進行 OCR 辨識...")
+            
+            # 將圖片轉換為 base64 格式
+            buffered = io.BytesIO()
+            image.save(buffered, format="PNG")
+            img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+            
+            # 構建 UFO2 LLM 請求，使用視覺分析提示
+            ocr_prompt = [
+                {
+                    "role": "system", 
+                    "content": """您是一個專業的螢幕截圖分析助手，專門協助分析 Gmail 自動化操作的螢幕截圖。
+                    請詳細分析提供的螢幕截圖並提取所有可見的文字內容和 UI 元素資訊。"""
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": """請仔細分析這張螢幕截圖並提供以下資訊：
+
+1. **文字內容提取**：
+   - 提取所有可見的文字內容
+   - 包括按鈕文字、連結文字、標題等
+
+2. **Gmail 相關內容**（如果適用）：
+   - 郵件主題和內容
+   - 寄件者資訊
+   - 收件匣狀態
+   - 郵件數量
+   - 選取狀態
+
+3. **UI 元素分析**：
+   - 按鈕位置和文字
+   - 輸入框內容
+   - 選單項目
+   - 導航元素
+
+4. **自動化操作建議**：
+   - 可點擊的元素
+   - 表單填寫狀態
+   - 操作完成狀態
+
+請以結構化的方式提供分析結果。"""
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{img_base64}",
+                                "detail": "high"
+                            }
+                        }
+                    ]
+                }
+            ]
+            
+            # 使用 UFO2 的 get_completion 函數進行 LLM 調用
+            print("📡 發送請求到 UFO2 LLM...")
+            try:
+                response, cost = get_completion(
+                    ocr_prompt,
+                    agent="APP",  # 使用 APP Agent 進行視覺分析
+                    use_backup_engine=True
+                )
+                
+                formatted_cost = f"{float(cost):.4f}" if cost is not None else "0.0000"
+                print(f"✅ UFO2 OCR 分析完成")
+                print(f"💰 UFO2 LLM 成本: ${formatted_cost}")
+                
+                return {
+                    'success': True,
+                    'text': response,
+                    'cost': float(cost) if cost is not None else 0.0,
+                    'method': 'UFO2_LLM'
+                }
+                
+            except Exception as e:
+                print(f"⚠️  UFO2 LLM 調用失敗，嘗試使用備用方法: {e}")
+                
+                # 備用方法：直接使用 OpenAI API（如果 UFO2 LLM 失敗）
+                return self._perform_backup_ocr(image)
+                
+        except Exception as e:
+            error_msg = f"UFO2 OCR 處理失敗: {str(e)}"
+            print(f"❌ {error_msg}")
+            return {'success': False, 'error': error_msg}
+    
+    def _perform_backup_ocr(self, image):
+        """
+        備用 OCR 方法：直接使用 OpenAI API
+        當 UFO2 LLM 不可用時使用
+        
+        參數:
+            image (PIL.Image): 要進行 OCR 的圖片
+            
+        返回:
+            dict: OCR 結果
+        """
+        try:
+            print("🔄 使用備用 OpenAI API 進行 OCR...")
+            
+            # 將圖片轉換為 base64 格式
+            buffered = io.BytesIO()
+            image.save(buffered, format="PNG")
+            img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+            
+            # 嘗試從多個來源獲取 API 金鑰
+            api_key = None
+            
+            # 方法1: 檢查環境變數（優先）
+            api_key = os.getenv('OPENAI_API_KEY')
+            if api_key and api_key.startswith('sk-'):
+                print("✅ 從環境變數 OPENAI_API_KEY 獲取到 API 金鑰")
+            else:
+                print("🔍 環境變數中未找到有效的 OPENAI_API_KEY")
+                
+            # 方法2: 檢查 UFO2 配置檔案
+            if not api_key or api_key == "sk-YOUR_API_KEY_HERE":
+                try:
+                    if self.config:
+                        # 檢查各個 Agent 的配置
+                        for agent_name in ['HOST_AGENT', 'APP_AGENT', 'EVALUATION_AGENT']:
+                            agent_config = self.config.get(agent_name, {})
+                            config_key = agent_config.get('API_KEY')
+                            if config_key and config_key != "sk-YOUR_API_KEY_HERE" and config_key.startswith('sk-'):
+                                api_key = config_key
+                                print(f"✅ 從 UFO2 配置 {agent_name} 獲取到 API 金鑰")
+                                break
+                        
+                        # 如果還沒找到，檢查頂層配置
+                        if not api_key or api_key == "sk-YOUR_API_KEY_HERE":
+                            config_keys = ['OPENAI_API_KEY', 'API_KEY']
+                            for key in config_keys:
+                                config_value = self.config.get(key)
+                                if config_value and config_value != "sk-YOUR_API_KEY_HERE" and config_value.startswith('sk-'):
+                                    api_key = config_value
+                                    print(f"✅ 從 UFO2 配置 {key} 獲取到 API 金鑰")
+                                    break
+                except Exception as e:
+                    print(f"⚠️  讀取 UFO2 配置失敗: {e}")
+            
+            # 方法3: 檢查是否有 .env 檔案
+            if not api_key or api_key == "sk-YOUR_API_KEY_HERE":
+                env_file = os.path.join(os.path.dirname(__file__), '.env')
+                if os.path.exists(env_file):
+                    try:
+                        with open(env_file, 'r', encoding='utf-8') as f:
+                            for line in f:
+                                if line.strip().startswith('OPENAI_API_KEY='):
+                                    env_key = line.strip().split('=', 1)[1].strip('"\'')
+                                    if env_key.startswith('sk-'):
+                                        api_key = env_key
+                                        print("✅ 從 .env 檔案獲取到 API 金鑰")
+                                        break
+                    except Exception as e:
+                        print(f"⚠️  讀取 .env 檔案失敗: {e}")
+                    
+            # 最終檢查
+            if not api_key or api_key == "sk-YOUR_API_KEY_HERE":
+                error_msg = """❌ API 金鑰未設定或無效！
+
+請使用以下任一方法設定您的 OpenAI API 金鑰：
+
+方法1 (推薦): 設定環境變數
+   在 Windows 中執行：
+   setx OPENAI_API_KEY "您的_API_金鑰"
+   
+   或執行我們提供的腳本：
+   setup_api_key.bat
+
+方法2: 在 UFO2 配置檔案中設定
+   編輯 config.yaml 檔案，將以下行：
+   API_KEY: "sk-YOUR_API_KEY_HERE"
+   替換為：
+   API_KEY: "您的真實API金鑰"
+
+方法3: 創建 .env 檔案
+   在專案目錄建立 .env 檔案，內容：
+   OPENAI_API_KEY=您的API金鑰
+
+💡 API 金鑰格式：sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+💡 獲取 API 金鑰：https://platform.openai.com/api-keys"""
+                
+                print(error_msg)
+                return {
+                    'success': False,
+                    'error': 'API 金鑰未設定。請參考上述說明設定 API 金鑰。'
+                }
+            
+            print(f"🔑 使用 API 金鑰: {api_key[:7]}...")  # 只顯示前7個字符用於驗證
+            
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}"
+            }
+            
+            payload = {
+                "model": "gpt-4-vision-preview",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "請分析這張螢幕截圖並提取所有可見的文字內容。請詳細描述你看到的內容，包括任何按鈕、連結、輸入框和其他 UI 元素。特別關注 Gmail 相關的內容，如郵件主題、寄件者、收件匣狀態等。"
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{img_base64}",
+                                    "detail": "high"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                "max_tokens": 1000
+            }
+            
+            # 發送請求到 OpenAI
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                response_data = response.json()
+                ocr_text = response_data['choices'][0]['message']['content']
+                
+                # 計算成本（估算）
+                usage = response_data.get('usage', {})
+                prompt_tokens = usage.get('prompt_tokens', 0)
+                completion_tokens = usage.get('completion_tokens', 0)
+                cost = (prompt_tokens * 0.01 + completion_tokens * 0.03) / 1000
+                
+                print(f"✅ 備用 OCR 完成，使用 tokens: {prompt_tokens + completion_tokens}")
+                print(f"💰 估算成本: ${cost:.4f}")
+                
+                return {
+                    'success': True,
+                    'text': ocr_text,
+                    'cost': cost,
+                    'tokens_used': prompt_tokens + completion_tokens,
+                    'method': 'Backup_OpenAI_API'
+                }
+            else:
+                error_msg = f"OpenAI API 請求失敗: {response.status_code} - {response.text}"
+                print(f"❌ {error_msg}")
+                return {'success': False, 'error': error_msg}
+                
+        except Exception as e:
+            error_msg = f"備用 OCR 處理失敗: {str(e)}"
+            print(f"❌ {error_msg}")
+            return {'success': False, 'error': error_msg}
                 
 # ============================= 主程式執行區 =============================
 if __name__ == "__main__":
@@ -848,7 +1230,59 @@ if __name__ == "__main__":
                 else:
                     print("❌ 未能選取任何郵件，請檢查頁面佈局或座標設定")
                 
-                # 我要將執行畫面截圖下來,同時加截圖的內容發給 openai 進行 OCR 辨識
+                # 步驟6: 執行螢幕截圖並進行 UFO2 OCR 辨識
+                print("\n📸 步驟6: 執行螢幕截圖並進行 UFO2 OCR 辨識...")
+                
+                # 等待一下確保頁面完全載入並穩定
+                time.sleep(1)
+                
+                # 執行截圖和 UFO2 OCR 分析
+                screenshot_result = chrome_agent.capture_screenshot_and_ocr(
+                    save_path=None,  # 自動生成檔案路徑
+                    ocr_analysis=True  # 啟用 UFO2 OCR 分析
+                )
+                
+                if screenshot_result['success']:
+                    print(f"✅ 截圖已完成並保存到: {screenshot_result['screenshot_path']}")
+                    print(f"📱 截圖尺寸: {screenshot_result['screenshot_size']}")
+                    
+                    # 如果有 OCR 結果
+                    if 'ocr_result' in screenshot_result:
+                        ocr_method = screenshot_result.get('ocr_method', 'UFO2_LLM')
+                        print(f"\n🔍 UFO2 OCR 辨識結果 (方法: {ocr_method}):")
+                        print("-" * 60)
+                        print(screenshot_result['ocr_result'])
+                        print("-" * 60)
+                        
+                        if 'ocr_cost' in screenshot_result:
+                            print(f"💰 UFO2 OCR 分析成本: ${screenshot_result['ocr_cost']:.4f}")
+                            
+                        # 將 OCR 結果保存到文字檔案
+                        ocr_text_path = screenshot_result['screenshot_path'].replace('.png', '_ufo2_ocr.txt')
+                        try:
+                            with open(ocr_text_path, 'w', encoding='utf-8') as f:
+                                f.write("=== UFO2 螢幕截圖 OCR 辨識結果 ===\n")
+                                f.write(f"截圖時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                                f.write(f"截圖檔案: {screenshot_result['screenshot_path']}\n")
+                                f.write(f"OCR 方法: {ocr_method}\n")
+                                if 'ocr_cost' in screenshot_result:
+                                    f.write(f"分析成本: ${screenshot_result['ocr_cost']:.4f}\n")
+                                f.write("-" * 60 + "\n")
+                                f.write(screenshot_result['ocr_result'])
+                                f.write("\n" + "-" * 60)
+                            print(f"📄 UFO2 OCR 結果已保存到: {ocr_text_path}")
+                        except Exception as e:
+                            print(f"⚠️  保存 UFO2 OCR 結果失敗: {e}")
+                    
+                    elif 'ocr_error' in screenshot_result:
+                        print(f"❌ UFO2 OCR 辨識失敗: {screenshot_result['ocr_error']}")
+                        print("💡 提示: 請確認 UFO2 配置中的 LLM 設定正確")
+                        print("💡 或確認已設定 OPENAI_API_KEY 環境變數作為備用方法")
+                        
+                else:
+                    print(f"❌ 截圖失敗: {screenshot_result.get('error', '未知錯誤')}")
+                
+                print("\n🎯 UFO2 截圖和 OCR 辨識任務完成！")
             
                 
             
