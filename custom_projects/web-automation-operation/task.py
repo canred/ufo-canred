@@ -1,37 +1,241 @@
 # ===== 模組導入區 =====
 import sys
 import os
-
-# 添加 UFO 框架路徑到 Python 路徑
-UFO_PATH = os.path.join(os.path.dirname(__file__), "../..")
-sys.path.append(UFO_PATH)
-
-# 設定配置檔案路徑環境變數（避免警告）
-os.environ.setdefault('UFO_CONFIG_PATH', os.path.join(os.path.dirname(__file__), 'config.yaml'))
-
-# 注意：需要安裝 pyautogui 和 pyperclip 來進行 UI 自動化和剪貼簿操作
-# 安裝命令：pip install pyautogui pyperclip
-
-# 導入 UFO2 基本模組
 import time
 import subprocess
 import json
 import asyncio
+
+# ===== 環境變數和路徑設定區 =====
+def setup_environment():
+    """設定環境變數和 Python 路徑"""
+    print("🔧 設定執行環境...")
+    
+    # 1. 設定 UFO 框架路徑
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    ufo_path = os.path.join(current_dir, "../..")
+    ufo_path = os.path.abspath(ufo_path)
+    
+    print(f"📂 當前目錄: {current_dir}")
+    print(f"📂 UFO 框架路徑: {ufo_path}")
+    
+    # 檢查 UFO 路徑是否存在
+    if not os.path.exists(ufo_path):
+        print(f"❌ UFO 框架路徑不存在: {ufo_path}")
+        return False
+    
+    # 檢查關鍵 UFO 模組是否存在
+    ufo_module_path = os.path.join(ufo_path, "ufo")
+    if not os.path.exists(ufo_module_path):
+        print(f"❌ UFO 模組目錄不存在: {ufo_module_path}")
+        return False
+    
+    # 添加 UFO 路徑到 Python 路徑（如果還沒有的話）
+    if ufo_path not in sys.path:
+        sys.path.insert(0, ufo_path)
+        print(f"✅ 已添加 UFO 路徑到 Python PATH: {ufo_path}")
+    else:
+        print(f"✅ UFO 路徑已在 Python PATH 中")
+    
+    # 2. 設定配置檔案路徑
+    config_path = os.path.join(current_dir, 'config.yaml')
+    config_path = os.path.abspath(config_path)
+    
+    print(f"📄 配置檔案路徑: {config_path}")
+    
+    # 檢查配置檔案是否存在
+    if not os.path.exists(config_path):
+        print(f"❌ 配置檔案不存在: {config_path}")
+        return False
+    
+    # 設定 UFO 配置檔案環境變數
+    os.environ['UFO_CONFIG_PATH'] = config_path
+    print(f"✅ 已設定 UFO_CONFIG_PATH: {config_path}")
+    
+    # 3. 設定 PYTHONPATH 環境變數（確保子程序也能找到模組）
+    pythonpath = os.environ.get('PYTHONPATH', '')
+    paths_to_add = [ufo_path, current_dir]
+    
+    for path in paths_to_add:
+        if path not in pythonpath:
+            if pythonpath:
+                pythonpath = f"{path};{pythonpath}"
+            else:
+                pythonpath = path
+    
+    os.environ['PYTHONPATH'] = pythonpath
+    print(f"✅ 已設定 PYTHONPATH: {pythonpath}")
+    
+    # 4. 顯示 Python 路徑資訊
+    print("📋 Python sys.path 前5項:")
+    for i, path in enumerate(sys.path[:5]):
+        print(f"   {i+1}. {path}")
+    
+    # 5. 驗證 UFO 模組是否可以導入
+    try:
+        # 先測試基本導入
+        import ufo
+        print("✅ UFO 模組導入成功")
+        
+        # 測試關鍵子模組
+        from ufo.config.config import Config
+        print("✅ UFO Config 模組導入成功")
+        
+        return True
+        
+    except ImportError as e:
+        print(f"❌ UFO 模組導入失敗: {e}")
+        print("💡 可能的解決方案:")
+        print("   1. 檢查 UFO 框架是否正確安裝")
+        print("   2. 檢查路徑設定是否正確")
+        print("   3. 確認當前目錄結構是否正確")
+        return False
+
+# 執行環境設定
+if not setup_environment():
+    print("❌ 環境設定失敗，程式無法繼續執行")
+    sys.exit(1)
+
+# 注意：需要安裝 pyautogui 和 pyperclip 來進行 UI 自動化和剪貼簿操作
+# 安裝命令：pip install pyautogui pyperclip
+
+# 導入基本模組
 import websockets
 import requests
 import base64
 from datetime import datetime
 from PIL import Image
 import io
-from ufo.module.basic import BaseSession
-from ufo.config.config import Config
-from ufo.agents.agent.host_agent import HostAgent, AgentFactory
-from ufo.agents.agent.app_agent import AppAgent
-from ufo.llm.llm_call import get_completion
-from ufo.module.sessions.session import SessionFactory
-from ufo.module.context import Context, ContextNames
-from ufo.automator.ui_control.inspector import ControlInspectorFacade
-from ufo import utils
+
+print("✅ 基本模組導入完成，開始導入 UFO2 模組...")
+
+# 修復 UFO 框架配置檔案問題
+def fix_ufo_config():
+    """修復 UFO 框架內部的配置檔案 YAML 語法問題"""
+    try:
+        ufo_config_path = os.path.join(os.path.dirname(__file__), "../..", "ufo", "config", "config.yaml")
+        ufo_config_path = os.path.abspath(ufo_config_path)
+        
+        if os.path.exists(ufo_config_path):
+            print(f"🔧 檢查 UFO 框架配置檔案: {ufo_config_path}")
+            
+            # 讀取並檢查配置檔案
+            with open(ufo_config_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # 檢查是否包含語法錯誤的模式
+            if '{' in content and '}' in content and ',' in content:
+                print("⚠️  發現 UFO 配置檔案使用了錯誤的 YAML 語法，正在修復...")
+                
+                # 創建備份
+                backup_path = ufo_config_path + '.backup'
+                with open(backup_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                print(f"📄 已建立備份檔案: {backup_path}")
+                
+                # 修復 YAML 語法（簡單的修復模式）
+                fixed_content = content
+                
+                # 將 {key: value, key2: value2} 格式轉換為標準 YAML
+                import re
+                
+                # 尋找並替換問題模式
+                patterns = [
+                    (r'(\w+):\s*{([^}]+)}', lambda m: fix_yaml_block(m.group(1), m.group(2))),
+                ]
+                
+                for pattern, replacement in patterns:
+                    fixed_content = re.sub(pattern, replacement, fixed_content, flags=re.MULTILINE | re.DOTALL)
+                
+                # 寫回修復後的內容
+                with open(ufo_config_path, 'w', encoding='utf-8') as f:
+                    f.write(fixed_content)
+                
+                print("✅ UFO 配置檔案已修復")
+                return True
+            else:
+                print("✅ UFO 配置檔案格式正常")
+                return True
+        else:
+            print(f"⚠️  UFO 配置檔案不存在: {ufo_config_path}")
+            return True  # 如果檔案不存在，繼續執行
+            
+    except Exception as e:
+        print(f"⚠️  修復 UFO 配置檔案時發生錯誤: {e}")
+        print("💡 將使用本地配置檔案繼續執行")
+        return True  # 即使修復失敗，也繼續執行
+
+def fix_yaml_block(key, content):
+    """將 {key: value, key2: value2} 格式轉換為標準 YAML"""
+    lines = [f"{key}:"]
+    
+    # 分割鍵值對
+    pairs = content.split(',')
+    for pair in pairs:
+        pair = pair.strip()
+        if ':' in pair:
+            k, v = pair.split(':', 1)
+            k = k.strip()
+            v = v.strip()
+            lines.append(f"  {k}: {v}")
+    
+    return '\n'.join(lines)
+
+# 執行 UFO 配置修復
+fix_ufo_config()
+
+# 導入 UFO2 基本模組（在環境設定後）
+try:
+    from ufo.module.basic import BaseSession
+    from ufo.config.config import Config
+    from ufo.agents.agent.host_agent import HostAgent, AgentFactory
+    from ufo.agents.agent.app_agent import AppAgent
+    from ufo.llm.llm_call import get_completion
+    from ufo.module.sessions.session import SessionFactory
+    from ufo.module.context import Context, ContextNames
+    from ufo.automator.ui_control.inspector import ControlInspectorFacade
+    from ufo import utils
+    print("✅ UFO2 模組導入成功")
+except ImportError as e:
+    print(f"❌ UFO2 模組導入失敗: {e}")
+    print("💡 請確認環境設定是否正確")
+    sys.exit(1)
+except Exception as e:
+    print(f"❌ UFO2 模組載入時發生錯誤: {e}")
+    print("💡 這可能是配置檔案問題，嘗試使用替代方案...")
+    
+    # 如果還是有問題，嘗試直接設定配置
+    try:
+        print("🔄 嘗試直接設定 UFO 配置...")
+        
+        # 先導入基本的配置模組
+        import yaml
+        
+        # 直接使用我們的配置檔案
+        local_config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
+        with open(local_config_path, 'r', encoding='utf-8') as f:
+            local_config = yaml.safe_load(f)
+        
+        # 創建最小必要的導入
+        from ufo.config.config import Config
+        
+        # 手動設定配置
+        config_instance = Config.get_instance()
+        config_instance.config_data = local_config
+        
+        print("✅ 使用本地配置檔案成功設定 UFO")
+        
+        # 現在導入其他模組
+        from ufo.agents.agent.host_agent import HostAgent, AgentFactory
+        from ufo.llm.llm_call import get_completion
+        from ufo import utils
+        
+        print("✅ UFO2 核心模組導入成功（使用本地配置）")
+        
+    except Exception as e2:
+        print(f"❌ 替代方案也失敗: {e2}")
+        print("💡 請檢查 UFO 框架安裝是否完整")
+        sys.exit(1)
 
 # ===== Chrome 瀏覽器自動化代理類別 =====
 class ChromeAutomationAgent:
@@ -782,22 +986,22 @@ class ChromeAutomationAgent:
             }
             
             # 如果需要進行 OCR 分析
-            if ocr_analysis:
-                print("🔍 開始進行 UFO2 OCR 辨識...")
-                ocr_result = self._perform_ufo2_ocr(screenshot)
+            # if ocr_analysis:
+            #     print("🔍 開始進行 UFO2 OCR 辨識...")
+            #     ocr_result = self._perform_ufo2_ocr(screenshot)
                 
-                if ocr_result['success']:
-                    result['ocr_result'] = ocr_result['text']
-                    result['ocr_cost'] = ocr_result.get('cost', 0.0)
-                    result['ocr_method'] = ocr_result.get('method', 'UFO2_LLM')
-                    print("✅ UFO2 OCR 辨識完成")
-                    screenshot_operation['ocr_completed'] = True
-                    screenshot_operation['ocr_cost'] = ocr_result.get('cost', 0.0)
-                    screenshot_operation['ocr_method'] = ocr_result.get('method', 'UFO2_LLM')
-                else:
-                    result['ocr_error'] = ocr_result['error']
-                    print(f"❌ UFO2 OCR 辨識失敗: {ocr_result['error']}")
-                    screenshot_operation['ocr_error'] = ocr_result['error']
+            #     if ocr_result['success']:
+            #         result['ocr_result'] = ocr_result['text']
+            #         result['ocr_cost'] = ocr_result.get('cost', 0.0)
+            #         result['ocr_method'] = ocr_result.get('method', 'UFO2_LLM')
+            #         print("✅ UFO2 OCR 辨識完成")
+            #         screenshot_operation['ocr_completed'] = True
+            #         screenshot_operation['ocr_cost'] = ocr_result.get('cost', 0.0)
+            #         screenshot_operation['ocr_method'] = ocr_result.get('method', 'UFO2_LLM')
+            #     else:
+            #         result['ocr_error'] = ocr_result['error']
+            #         print(f"❌ UFO2 OCR 辨識失敗: {ocr_result['error']}")
+            #         screenshot_operation['ocr_error'] = ocr_result['error']
             
             screenshot_operation['status'] = 'success'
             self.session_data['screenshot_operation'] = screenshot_operation
@@ -1020,7 +1224,7 @@ class ChromeAutomationAgent:
             }
             
             payload = {
-                "model": "gpt-4-vision-preview",
+                "model": "gpt-4o",  # 使用最新的 GPT-4 Vision 模型
                 "messages": [
                     {
                         "role": "user",
@@ -1083,9 +1287,15 @@ class ChromeAutomationAgent:
 # ============================= 主程式執行區 =============================
 if __name__ == "__main__":
     print("=== UFO2 Chrome 瀏覽器自動化程式 ===")
-    print(f"UFO 框架路徑: {os.path.abspath(UFO_PATH)}")    
+    
+    # 顯示路徑資訊
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    ufo_path = os.path.join(current_dir, "../..")
+    ufo_path = os.path.abspath(ufo_path)
+    print(f"UFO 框架路徑: {ufo_path}")    
+    
     # 檢查配置檔案
-    config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
+    config_path = os.path.join(current_dir, 'config.yaml')
     if os.path.exists(config_path):
         print(f"配置檔案: {config_path}")
     else:
@@ -1182,35 +1392,35 @@ if __name__ == "__main__":
                 
                 print(f"🎯 開始選擇前 {max_emails} 筆郵件的 checkbox...")
                 
-                for i in range(max_emails):
-                    # 確認 Chrome 視窗是正確的 active window，如果不是，先切換過去
-                    print(f"🖥️  確保 Chrome 視窗處於活動狀態...")
-                    chrome_agent.ensure_chrome_window_active()
+                # for i in range(max_emails):
+                #     # 確認 Chrome 視窗是正確的 active window，如果不是，先切換過去
+                #     print(f"🖥️  確保 Chrome 視窗處於活動狀態...")
+                #     chrome_agent.ensure_chrome_window_active()
                    
-                    # 計算當前郵件 checkbox 的 Y 座標
-                    current_y = start_y + (i * email_height)
+                #     # 計算當前郵件 checkbox 的 Y 座標
+                #     current_y = start_y + (i * email_height)
                     
-                    try:
-                        print(f"📍 點擊第 {i+1} 筆郵件的 checkbox 位置: ({checkbox_x}, {current_y})")
+                #     try:
+                #         print(f"📍 點擊第 {i+1} 筆郵件的 checkbox 位置: ({checkbox_x}, {current_y})")
                         
-                        # 點擊 checkbox
-                        success = chrome_agent.simulate_mouse_click_at_position(
-                            checkbox_x, 
-                            current_y, 
-                            button='left', 
-                            duration=0.1
-                        )
+                #         # 點擊 checkbox
+                #         success = chrome_agent.simulate_mouse_click_at_position(
+                #             checkbox_x, 
+                #             current_y, 
+                #             button='left', 
+                #             duration=0.1
+                #         )
                         
-                        if success:
-                            selected_count += 1
-                            print(f"✅ 第 {i+1} 筆郵件已選取")
-                            # time.sleep(0.5)  # 每次點擊間隔
-                        else:
-                            print(f"⚠️  第 {i+1} 筆郵件選取失敗")
+                #         if success:
+                #             selected_count += 1
+                #             print(f"✅ 第 {i+1} 筆郵件已選取")
+                #             # time.sleep(0.5)  # 每次點擊間隔
+                #         else:
+                #             print(f"⚠️  第 {i+1} 筆郵件選取失敗")
                             
-                    except Exception as e:
-                        print(f"❌ 選取第 {i+1} 筆郵件時發生錯誤: {e}")
-                        continue
+                #     except Exception as e:
+                #         print(f"❌ 選取第 {i+1} 筆郵件時發生錯誤: {e}")
+                #         continue
                 
                 # 記錄選取結果
                 chrome_agent.session_data['email_selection'] = {
