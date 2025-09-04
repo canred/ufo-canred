@@ -5,6 +5,7 @@ import time
 import subprocess
 import json
 import asyncio
+import autoit
 
 # ===== 環境變數和路徑設定區 =====
 def setup_environment():
@@ -236,6 +237,159 @@ except Exception as e:
         print(f"❌ 替代方案也失敗: {e2}")
         print("💡 請檢查 UFO 框架安裝是否完整")
         sys.exit(1)
+
+
+def find_text_input_box(target_window_title, input_box_class="編輯"):
+    """
+    打开目标窗口并定位文字输入框
+    :param target_window_title: 目标窗口标题（如“无标题 - 记事本”）
+    :param input_box_class: 文字输入框的控件类名（默认“Edit”，多数输入框通用）
+    :return: 输入框信息字典（坐标、尺寸、状态）或错误信息
+    """
+    try:
+        # 1. 打开目标窗口（以记事本为例，其他窗口替换为对应启动命令）
+        print(f"正在打开目标窗口：{target_window_title}")
+        autoit.run("notepad.exe")  # 启动记事本，其他程序替换为路径（如"E:\App\XXX.exe"）
+        time.sleep(2)  # 等待窗口完全打开（根据程序启动速度调整时间）
+            # 2. 检查窗口是否成功打开并激活
+        if not autoit.win_exists(target_window_title):
+            return {"status": "fail", "msg": f"窗口「{target_window_title}」未找到，请检查窗口标题或启动命令"}
+        autoit.win_activate(target_window_title)  # 激活窗口（确保控件可识别）
+        time.sleep(1)
+
+        # 3. 定位文字输入框（通过“窗口标题+控件类名”精准匹配，INSTANCE=1表示第一个匹配的控件）
+        #input_box_identifier = f"CLASS:{input_box_class};INSTANCE:1"
+        input_box_identifier = f"[CLASS:Microsoft.UI.Content.DesktopChildSiteBridge; INSTANCE:4]"
+        input_box_identifier = f"[CLASS:RichEditD2DPT; INSTANCE:1]"
+        # 检查输入框是否存在 - 使用 control_get_handle 来检查控件是否存在
+        try:
+            print(f"🔍 正在獲取視窗句柄...")
+            window_handle = autoit.win_get_handle(target_window_title)
+            print(f"📋 視窗句柄獲取成功: {window_handle}")
+            
+            if not window_handle or window_handle == 0:
+                return {"status": "fail", "msg": f"無法獲取視窗句柄: {target_window_title}"}
+            
+            print(f"🔍 正在獲取控件句柄: {input_box_identifier}")
+            control_handle = autoit.control_get_handle(window_handle, input_box_identifier)
+            print(f"📋 控件句柄獲取結果: {control_handle}")
+            
+            if not control_handle or control_handle == 0:
+                # 嘗試列出視窗中的所有控件以幫助調試
+                try:
+                    print("🔍 嘗試列出視窗中的控件...")
+                    class_list = autoit.win_get_class_list(window_handle)
+                    print(f"📋 視窗控件類別列表: {class_list}")
+                except Exception as list_error:
+                    print(f"⚠️  無法列出控件: {list_error}")
+                
+                return {"status": "fail", "msg": f"在窗口「{target_window_title}」中未找到控件「{input_box_identifier}」"}
+                
+        except Exception as e:
+            import traceback
+            error_detail = traceback.format_exc()
+            print(f"❌ 獲取句柄時發生異常:")
+            print(f"   異常類型: {type(e).__name__}")
+            print(f"   異常訊息: {str(e)}")
+            print(f"   詳細追蹤: {error_detail}")
+            return {"status": "fail", "msg": f"在窗口「{target_window_title}」中未找到「{input_box_class}」类的文字输入框: {str(e)}", "traceback": error_detail}
+
+        # 4. 获取输入框的关键信息（坐标、尺寸、当前文本）
+        # 添加詳細的驗證和錯誤處理
+        print(f"📋 視窗句柄: {window_handle}")
+        print(f"📋 控件識別符: {input_box_identifier}")
+        
+        # 驗證視窗句柄是否有效
+        if not window_handle or window_handle == 0:
+            return {"status": "fail", "msg": f"無效的視窗句柄: {window_handle}"}
+        
+        # 驗證控件句柄是否有效
+        if not control_handle or control_handle == 0:
+            return {"status": "fail", "msg": f"無效的控件句柄: {control_handle}"}
+        
+        print(f"📋 控件句柄: {control_handle}")
+        
+        # 嘗試點擊控件（使用控件句柄而不是識別符）
+        try:
+            print("🖱️  嘗試點擊控件...")
+            # 使用 control_click_by_handle 替代 control_click
+            autoit.control_click_by_handle(window_handle, control_handle)
+            print("✅ 控件點擊成功")
+        except Exception as click_error:
+            print(f"⚠️  控件點擊失敗: {click_error}")
+            # 如果點擊失敗，嘗試其他方法設置焦點
+            try:
+                print("🔄 嘗試使用 control_focus...")
+                autoit.control_focus_by_handle(window_handle, control_handle)
+                print("✅ 控件焦點設置成功")
+            except Exception as focus_error:
+                print(f"⚠️  設置焦點也失敗: {focus_error}")
+                # 繼續執行，但記錄警告
+        
+        time.sleep(0.5)  # 等待控件響應
+        
+        # input_box_x, input_box_y, input_box_width, input_box_height = autoit.control_get_pos(
+        #     window_handle,
+        #     input_box_identifier
+        # )
+        # # 获取输入框当前文本（可选）
+        # input_box_current_text = autoit.control_get_text(
+        #     window_handle,
+        #     input_box_identifier
+        # )
+
+        # 5. （可选）操作输入框：清空原有文本并输入新内容
+        try:
+            print("⌨️  嘗試設置控件文本...")
+            # 使用 control_set_text_by_handle 替代 control_set_text
+            autoit.control_set_text_by_handle(
+                window_handle,
+                control_handle,
+                "这是通过Python+autoit输入的文本"
+            )
+            print("✅ 文本設置成功")
+        except Exception as set_text_error:
+            print(f"⚠️  設置文本失敗: {set_text_error}")
+            # 嘗試使用 send 命令作為備用方案
+            try:
+                print("🔄 嘗試使用 send 命令...")
+                # 先確保控件有焦點，然後發送文本
+                autoit.control_focus_by_handle(window_handle, control_handle)
+                time.sleep(0.2)
+                autoit.send("^a")  # Ctrl+A 全選
+                time.sleep(0.1)
+                autoit.send("这是通过Python+autoit输入的文本")
+                print("✅ 使用 send 命令設置文本成功")
+            except Exception as send_error:
+                print(f"⚠️  send 命令也失敗: {send_error}")
+                # 記錄錯誤但繼續執行
+
+        # 6. 返回成功结果
+        return {
+            "status": "success",
+            "window_title": target_window_title,
+            # "input_box_info": {
+            #     "class": input_box_class,
+            #     "position": (input_box_x, input_box_y),  # 输入框左上角坐标
+            #     "size": (input_box_width, input_box_height),  # 输入框宽高
+            #     "current_text": input_box_current_text  # 操作前的文本（若需保留可注释set_text）
+            # }
+        }
+
+    except Exception as e:
+        import traceback
+        error_traceback = traceback.format_exc()
+        print(f"❌ find_text_input_box 執行異常:")
+        print(f"   異常類型: {type(e).__name__}")
+        print(f"   異常訊息: {str(e)}")
+        print(f"   詳細追蹤:")
+        print(error_traceback)
+        return {
+            "status": "fail", 
+            "msg": f"执行出错：{str(e)}",
+            "error_type": type(e).__name__,
+            "traceback": error_traceback
+        }
 
 # ===== Chrome 瀏覽器自動化代理類別 =====
 class ChromeAutomationAgent:
@@ -1218,18 +1372,19 @@ def run_autoit_au3():
 
 def autoit_py_demo():
     """
-    使用 pyautoit 控制視窗（需 pip install pyautoit）
+    使用 autoit 控制視窗（原本需要 pyautoit，現在使用 autoit）
     """
     try:
-        import pyautoit
+        # 不需要額外導入，autoit 已經在頂部導入
+        pass
     except ImportError:
-        print("❌ 請先安裝 pyautoit: pip install pyautoit")
+        print("❌ autoit 模組未找到")
         return False
     # 範例：啟動記事本並輸入文字
-    pyautoit.run("notepad.exe")
-    pyautoit.win_wait_active("無標題 - 記事本", 5)
-    pyautoit.send("這是 UFO2 + AutoIt 範例!{ENTER}")
-    print("✅ pyautoit 操作完成")
+    autoit.run("notepad.exe")
+    autoit.win_wait_active("無標題 - 記事本", 5)
+    autoit.send("這是 UFO2 + AutoIt 範例!{ENTER}")
+    print("✅ autoit 操作完成")
     return True
 if __name__ == "__main__":
     print("=== UFO2 Chrome 瀏覽器自動化程式 ===")
@@ -1294,6 +1449,7 @@ if __name__ == "__main__":
                 import subprocess
                 autoit_exe = os.path.join(os.path.dirname(__file__), 'autoit', 'AutoIt3.exe')
                 au3_script = os.path.join(os.path.dirname(__file__), 'autoit', 'move_mouse_600_600.au3')
+                
                 if not os.path.exists(autoit_exe):
                     print(f"❌ 找不到 AutoIt3.exe: {autoit_exe}")
                 elif not os.path.exists(au3_script):
@@ -1304,6 +1460,12 @@ if __name__ == "__main__":
                 # 執行 au3 腳本
                 print(f"🚀 執行 AutoIt 移動滑鼠腳本: {au3_script}")
                 subprocess.Popen([autoit_exe, au3_script])
+                
+                # # 配置目标窗口参数（需根据你的实际需求修改！）
+                TARGET_WINDOW = "无标题 - Notepad"  # 目标窗口标题（用AutoIT Window Info工具查看）
+                INPUT_BOX_CLASS = "Edit"  # 文字输入框类名（默认“Edit”，多数程序通用，特殊情况需修改）
+                # 执行定位逻辑
+                result = find_text_input_box(TARGET_WINDOW, INPUT_BOX_CLASS)
             
         else:
             print("❌ Chrome 瀏覽器啟動失敗")
